@@ -1,0 +1,150 @@
+---
+id: usage
+title: Usage
+sidebar_position: 3
+---
+
+# Usage
+
+## Ask one peer
+
+```bash
+model-peer ask claude "Review the caching strategy for failure modes"
+model-peer ask codex "Check this authorization design for bypasses"
+model-peer ask gemini "Compare these two queue architectures"
+```
+
+The peer runs in your current working directory with read-only inspection tools, so
+reference files and symbols rather than pasting excerpts. One focused question works
+far better than a broad one — a peer that has to guess at scope returns generic
+advice.
+
+Prompts can be piped:
+
+```bash
+printf '%s\n' "Review the current migration strategy" | model-peer ask codex
+git diff | model-peer ask codex "What breaks in production?"
+```
+
+Let the peer consult a further model — see [Peer-chain depth](depth):
+
+```bash
+model-peer ask claude --depth 2 "Is this lock-free queue actually correct?"
+```
+
+If your prompt begins with a dash, end the options first:
+
+```bash
+model-peer ask codex -- "--force is documented but unimplemented, right?"
+```
+
+Compatibility shortcuts:
+
+```bash
+ask-claude "..."
+ask-codex "..."
+ask-gemini "..."
+```
+
+## Cross-model review
+
+Inside a Git repository:
+
+```bash
+model-peer review
+```
+
+Every reviewer receives the same Git status and patch and works independently. Only
+after all reviews complete does a synthesizer reconcile them.
+
+Add a focus:
+
+```bash
+model-peer review "Focus on authorization, tenant isolation, and data leakage"
+```
+
+By default every installed supported CLI participates. **At least two models are
+required** — a one-model panel is not a cross-model review.
+
+Choose reviewers explicitly:
+
+```bash
+model-peer review --models claude,codex
+model-peer review --models codex,gemini
+model-peer review --models claude,codex,gemini
+```
+
+Choose the synthesizer:
+
+```bash
+model-peer review --synthesizer codex
+```
+
+Claude is preferred for synthesis when installed, then Codex, then Gemini. The
+synthesizer is always a leaf: it never consults a peer, regardless of `--depth`.
+
+The old command remains available:
+
+```bash
+ai-review
+```
+
+### What reviewers are asked for
+
+Each reviewer is asked for actionable findings only, with severity, file and line or
+symbol, why it matters, a recommended fix, and a confidence level — plus important
+test gaps. Style-only comments are discouraged unless they create real maintenance
+or correctness risk. If the changes look sound, reviewers are told to say so
+explicitly.
+
+The synthesizer produces prioritized deduplicated findings, attributes each to the
+reviewers who raised it, and calls out disagreements and likely false positives. It
+is explicitly instructed **not** to accept a claim merely because several models
+repeated it.
+
+### Large diffs
+
+Patches are embedded up to `MODEL_PEER_MAX_DIFF_BYTES` (default 500000). Beyond
+that the patch is truncated with a marker, and reviewers are told to inspect the
+listed files directly for the remainder.
+
+## Check setup
+
+```bash
+model-peer doctor
+```
+
+```text
+Model Peer v0.2.0
+
+Claude    installed  /Users/you/.local/bin/claude
+Codex     installed  /opt/homebrew/bin/codex
+Gemini    missing
+
+Safety defaults
+  Claude  plan mode; Read/Glob/Grep only; stdin closed
+  Codex   read-only sandbox; ephemeral session; stdin closed
+  Gemini  plan mode + deny policy; extensions disabled; stdin closed
+  All     chain guard via MODEL_PEER_STACK; no model consults itself
+  All     peers never write, and never gain a general shell
+
+Nested consultation support
+  Claude   yes   execution scoped to the model-peer command namespace
+  Codex    yes   read-only sandbox already permits it; nothing added
+  Gemini   no    cannot scope execution to model-peer alone; always a leaf
+
+Peer-chain depth limit: 1 (max 10)
+```
+
+## Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | success |
+| `1` | a reviewer or the synthesizer failed |
+| `2` | usage or validation error |
+| `64` | refused by a chain guard (depth limit or self-consultation) |
+| `127` | a required command is not installed |
+
+Progress and diagnostics go to stderr; only model output goes to stdout, so
+`model-peer ask ... | ...` stays pipeable.

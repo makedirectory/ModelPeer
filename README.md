@@ -2,6 +2,12 @@
 
 **Cross-model peer review for coding agents.**
 
+📖 **[Documentation](https://makedirectory.github.io/ModelPeer/)** —
+[Install](https://makedirectory.github.io/ModelPeer/install) ·
+[Usage](https://makedirectory.github.io/ModelPeer/usage) ·
+[Peer-chain depth](https://makedirectory.github.io/ModelPeer/depth) ·
+[Safety boundaries](https://makedirectory.github.io/ModelPeer/safety)
+
 Model Peer lets Claude Code, OpenAI Codex CLI, and Google Gemini CLI consult one
 another as independent, read-only engineering peers.
 

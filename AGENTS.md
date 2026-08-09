@@ -23,6 +23,17 @@ make lint     # bash -n over every script, plus shellcheck when installed
 make sync     # regenerate install.sh's embedded copy of bin/model-peer
 ```
 
+The docs site lives in `documentation/` (Docusaurus, deployed to GitHub Pages by
+`.github/workflows/docs.yml`). It is the only part of the repo with Node
+dependencies; the tool itself stays dependency-free.
+
+```bash
+cd documentation && npm install && npm run build   # build fails on broken links
+```
+
+User-facing behavior changes need the matching page updated under `documentation/docs/`,
+not only the README. The README is the entry point; the site is the reference.
+
 `tests/smoke.sh` is a single linear script with no test-case selection. To run one
 assertion in isolation, copy its block into a scratch file that reuses the stub
 setup from the top of `tests/smoke.sh`. The stubs log invocations to

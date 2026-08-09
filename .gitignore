@@ -1,3 +1,15 @@
 .DS_Store
 *.swp
 *.tmp
+
+# Never commit secrets. Model Peer itself reads no credentials, but a contributor's
+# scratch environment file must not reach a public repository.
+.env
+.env.*
+!.env.example
+
+# Docs site
+node_modules/
+documentation/build/
+documentation/.docusaurus/
+documentation/.cache-loader/
