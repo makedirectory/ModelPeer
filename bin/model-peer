@@ -18,22 +18,39 @@ Usage:
   model-peer doctor
   model-peer --version
 
+Ask options:
+  --depth N              Max peer-chain length, 1-10 (default: 1)
+
 Review options:
   --models LIST          Comma-separated reviewers (default: all installed)
   --synthesizer MODEL    claude, codex, or gemini (default: first available in
                          claude,codex,gemini order)
+  --depth N              Max peer-chain length for each reviewer, 1-10 (default: 1)
+
+Peer-chain depth:
+  Depth is a limit, never a permission. Depth 1 (default) means a peer answers on
+  its own. Depth N lets a chain grow to N models: claude -> codex -> gemini is 3.
+  A model can never be consulted by itself, at any depth.
+
+  Nested consultation additionally requires limited outbound execution, which
+  Model Peer scopes as narrowly as each provider allows. Where a provider cannot
+  scope it to Model Peer alone, that peer stays a leaf rather than being granted
+  a general shell. Run 'model-peer doctor' for the per-provider matrix.
 
 Environment:
   MODEL_PEER_REVIEWERS        Default comma-separated review model list
   MODEL_PEER_SYNTHESIZER      Default synthesis model
+  MODEL_PEER_MAX_DEPTH        Default peer-chain depth limit, 1-10 (1)
   MODEL_PEER_MAX_DIFF_BYTES   Max patch bytes embedded in review prompt (500000)
+  MODEL_PEER_STACK            Managed by Model Peer; the active peer chain
 
 Compatibility commands installed with Model Peer:
   ask-claude, ask-codex, ask-gemini, ai-review
 USAGE
 }
 
-err() { printf 'model-peer: %s\n' "$*" >&2; }
+err() { printf '%s: %s\n' "$PROGRAM" "$*" >&2; }
+note() { printf '%s: %s\n' "$PROGRAM" "$*" >&2; }
 
 provider_label() {
   case "$1" in
@@ -48,15 +65,100 @@ provider_installed() {
   command -v "$1" >/dev/null 2>&1
 }
 
-stack_contains() {
-  local provider="$1"
-  [[ ":${MODEL_PEER_STACK:-}:" == *":${provider}:"* ]]
+DEFAULT_MAX_DEPTH=1
+DEPTH_CEILING=10
+
+# MODEL_PEER_STACK is the chain of models already active, e.g. "claude:codex".
+# Its length is the current depth; the depth limit caps how long it may grow.
+stack_depth() {
+  local stack="${MODEL_PEER_STACK:-}"
+  [[ -n "$stack" ]] || { printf '0'; return; }
+  local IFS=:
+  local parts
+  read -r -a parts <<< "$stack"
+  printf '%s' "${#parts[@]}"
+}
+
+stack_last() {
+  local stack="${MODEL_PEER_STACK:-}"
+  printf '%s' "${stack##*:}"
 }
 
 push_stack() {
   local provider="$1"
   local stack="${MODEL_PEER_STACK:-}"
   printf '%s' "${stack:+$stack:}$provider"
+}
+
+# Resolve the depth limit from --depth, then MODEL_PEER_MAX_DEPTH, then the default.
+resolve_max_depth() {
+  local requested="$1"
+  local depth="${requested:-${MODEL_PEER_MAX_DEPTH:-$DEFAULT_MAX_DEPTH}}"
+  [[ "$depth" =~ ^[0-9]+$ ]] || {
+    err "depth must be an integer between 1 and $DEPTH_CEILING (got '$depth')."
+    return 2
+  }
+  (( depth >= 1 && depth <= DEPTH_CEILING )) || {
+    err "depth must be between 1 and $DEPTH_CEILING (got $depth)."
+    return 2
+  }
+  printf '%s' "$depth"
+}
+
+# Depth and delegation are deliberately separate concepts:
+#
+#   depth       maximum recursion depth — a limit, never a permission
+#   delegation  permission to initiate a further consultation, and the mechanism
+#
+# Depth alone never widens what a peer can do to the host system. Delegation is
+# granted only where a provider's sandbox can constrain it to Model Peer itself.
+#
+#   claude   namespaced  Bash auto-approved only for Bash(model-peer:*)
+#   codex    sandboxed   read-only sandbox already permits this; nothing is added
+#   gemini   unsupported policy can only allow/deny run_shell_command wholesale,
+#                        so delegating would unlock the hallway to open one door
+provider_delegation_support() {
+  case "$1" in
+    claude) printf 'namespaced' ;;
+    codex)  printf 'sandboxed' ;;
+    gemini) printf 'unsupported' ;;
+    *)      printf 'unsupported' ;;
+  esac
+}
+
+# Resolve the delegation permission for a peer about to be spawned. Depth budget
+# is necessary but not sufficient: the provider must also be able to hold the
+# permission narrowly.
+resolve_delegation() {
+  local provider="$1" remaining="$2"
+  if (( remaining <= 0 )); then
+    printf 'none'
+    return
+  fi
+  case "$(provider_delegation_support "$provider")" in
+    namespaced) printf 'namespaced' ;;
+    sandboxed)  printf 'sandboxed' ;;
+    *)          printf 'none' ;;
+  esac
+}
+
+# Two independent guards: the chain may not exceed the depth limit, and a model
+# may never be consulted by itself. The second holds at every depth.
+check_chain() {
+  local provider="$1" max_depth="$2"
+  local depth
+  depth="$(stack_depth)"
+
+  if [[ "$(stack_last)" == "$provider" ]]; then
+    err "blocked: $(provider_label "$provider") cannot consult itself (chain=${MODEL_PEER_STACK:-empty})."
+    return 64
+  fi
+  if (( depth >= max_depth )); then
+    err "blocked: peer chain depth limit reached (depth=$depth, limit=$max_depth, chain=${MODEL_PEER_STACK:-empty})."
+    err "Raise it with --depth N (max $DEPTH_CEILING) or MODEL_PEER_MAX_DEPTH."
+    return 64
+  fi
+  return 0
 }
 
 read_prompt() {
@@ -80,16 +182,35 @@ require_nonempty_prompt() {
 consultation_prompt() {
   local provider="$1"
   local prompt="$2"
+  local remaining="$3"
+  local delegation="$4"
+  local delegation_rule
+
+  if [[ "$delegation" == 'none' ]]; then
+    delegation_rule="Do not invoke Claude Code, Codex CLI, Gemini CLI, Model Peer, or any other model.
+Do not delegate the decision back to another agent."
+    remaining=0
+  else
+    delegation_rule="You may consult one further peer with \`model-peer ask <model> \"<question>\"\` if a
+genuinely independent perspective would change your answer. $remaining more level(s) are
+permitted. Consult nothing else: that command is the only execution you are authorized
+to perform. Prefer answering directly, since every hop costs time and dilutes
+accountability. If you do consult a peer, say which model you asked and what you took
+from it."
+  fi
+
   cat <<PROMPT
 You are being consulted as an independent engineering peer through Model Peer.
 Answer the user's focused question. Inspect the current workspace read-only when useful.
-Do not modify files. Do not invoke Claude Code, Codex CLI, Gemini CLI, Model Peer,
-or any other model. Do not delegate the decision back to another agent.
+Do not modify files.
+
+$delegation_rule
 
 Your advice is advisory. Project-specific rules and invariants take precedence.
 Reason independently, distinguish evidence from assumptions, and call out uncertainty.
 
 Consulted model: $provider
+Remaining peer-chain depth: $remaining
 
 User question:
 $prompt
@@ -97,25 +218,31 @@ PROMPT
 }
 
 run_claude() {
-  local prompt="$1"
-  stack_contains claude && {
-    err "blocked recursive Claude invocation (stack=${MODEL_PEER_STACK:-empty})."
-    return 64
-  }
+  local prompt="$1" stack="$2" remaining="$3" max_depth="$4" delegation="$5"
   provider_installed claude || {
     err "'claude' was not found on PATH."
     err 'Install Claude Code: https://code.claude.com/docs/en/setup'
     return 127
   }
 
-  local stack bridge_prompt
-  stack="$(push_stack claude)"
-  bridge_prompt="$(consultation_prompt Claude "$prompt")"
+  local bridge_prompt tools
+  bridge_prompt="$(consultation_prompt Claude "$prompt" "$remaining" "$delegation")"
 
-  MODEL_PEER_STACK="$stack" \
+  # Read-only inspection only. Delegation adds Bash, auto-approved for the single
+  # model-peer command namespace and nothing else. This is the narrowest grant
+  # the provider can express, not a general shell.
+  tools='Read,Glob,Grep'
+  local -a nested_args=()
+  if [[ "$delegation" == 'namespaced' ]]; then
+    tools='Read,Glob,Grep,Bash'
+    nested_args=(--allowedTools 'Bash(model-peer:*)')
+  fi
+
+  MODEL_PEER_STACK="$stack" MODEL_PEER_MAX_DEPTH="$max_depth" \
     claude -p \
       --permission-mode plan \
-      --tools "Read,Glob,Grep" \
+      --tools "$tools" \
+      ${nested_args[@]+"${nested_args[@]}"} \
       --disable-slash-commands \
       --no-session-persistence \
       "$bridge_prompt" \
@@ -123,22 +250,20 @@ run_claude() {
 }
 
 run_codex() {
-  local prompt="$1"
-  stack_contains codex && {
-    err "blocked recursive Codex invocation (stack=${MODEL_PEER_STACK:-empty})."
-    return 64
-  }
+  local prompt="$1" stack="$2" remaining="$3" max_depth="$4" delegation="$5"
   provider_installed codex || {
     err "'codex' was not found on PATH."
     err 'Install Codex CLI: https://developers.openai.com/codex/cli'
     return 127
   }
 
-  local stack bridge_prompt
-  stack="$(push_stack codex)"
-  bridge_prompt="$(consultation_prompt Codex "$prompt")"
+  # Codex flags are identical either way: --sandbox read-only already permits
+  # read-only command execution, so delegation grants no new capability here and
+  # changes only what the prompt authorizes.
+  local bridge_prompt
+  bridge_prompt="$(consultation_prompt Codex "$prompt" "$remaining" "$delegation")"
 
-  MODEL_PEER_STACK="$stack" \
+  MODEL_PEER_STACK="$stack" MODEL_PEER_MAX_DEPTH="$max_depth" \
     codex exec \
       --sandbox read-only \
       --ephemeral \
@@ -148,20 +273,17 @@ run_codex() {
 }
 
 run_gemini() {
-  local prompt="$1"
-  stack_contains gemini && {
-    err "blocked recursive Gemini invocation (stack=${MODEL_PEER_STACK:-empty})."
-    return 64
-  }
+  local prompt="$1" stack="$2" remaining="$3" max_depth="$4" delegation="$5"
   provider_installed gemini || {
     err "'gemini' was not found on PATH."
     err 'Install Gemini CLI: https://google-gemini.github.io/gemini-cli/docs/get-started/'
     return 127
   }
 
-  local stack bridge_prompt tmpdir policy status
-  stack="$(push_stack gemini)"
-  bridge_prompt="$(consultation_prompt Gemini "$prompt")"
+  # Gemini is always a leaf: resolve_delegation never returns anything but 'none'
+  # for it, so the deny policy below is unconditional.
+  local bridge_prompt tmpdir policy status
+  bridge_prompt="$(consultation_prompt Gemini "$prompt" "$remaining" "$delegation")"
   tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/model-peer-gemini.XXXXXX")"
   policy="$tmpdir/read-only.toml"
 
@@ -194,7 +316,7 @@ decision = "deny"
 priority = 999
 POLICY
 
-  if MODEL_PEER_STACK="$stack" \
+  if MODEL_PEER_STACK="$stack" MODEL_PEER_MAX_DEPTH="$max_depth" \
       gemini \
         --approval-mode plan \
         --policy "$policy" \
@@ -210,30 +332,83 @@ POLICY
   return "$status"
 }
 
+# run_provider owns the chain: it validates the guards, pushes the provider, and
+# computes how much depth is left for the peer it is about to spawn.
 run_provider() {
-  local provider="$1"
-  shift
-  local prompt="$*"
+  local provider="$1" max_depth="$2" prompt="$3"
   require_nonempty_prompt "$prompt" || return
 
   case "$provider" in
-    claude) run_claude "$prompt" ;;
-    codex)  run_codex "$prompt" ;;
-    gemini) run_gemini "$prompt" ;;
+    claude|codex|gemini) ;;
     *) err "unknown model '$provider'. Use claude, codex, or gemini."; return 2 ;;
+  esac
+
+  check_chain "$provider" "$max_depth" || return 64
+
+  local stack remaining delegation
+  stack="$(push_stack "$provider")"
+  remaining=$(( max_depth - $(stack_depth) - 1 ))
+  delegation="$(resolve_delegation "$provider" "$remaining")"
+
+  # A depth budget the provider cannot safely hold is reported, never silently
+  # converted into a wider sandbox.
+  if (( remaining > 0 )) && [[ "$delegation" == 'none' ]]; then
+    note "$(provider_label "$provider") cannot initiate nested consultation; answering as a leaf."
+    note "Reason: its policy engine cannot scope execution to model-peer alone. See README."
+  fi
+
+  case "$provider" in
+    claude) run_claude "$prompt" "$stack" "$remaining" "$max_depth" "$delegation" ;;
+    codex)  run_codex  "$prompt" "$stack" "$remaining" "$max_depth" "$delegation" ;;
+    gemini) run_gemini "$prompt" "$stack" "$remaining" "$max_depth" "$delegation" ;;
   esac
 }
 
 cmd_ask() {
-  (( $# >= 1 )) || { err 'ask requires a model: claude, codex, or gemini.'; return 2; }
-  local provider="$1"
-  shift
+  local provider='' depth_arg=''
+  local -a rest=()
+
+  while (( $# > 0 )); do
+    case "$1" in
+      --depth)
+        shift; (( $# > 0 )) || { err '--depth requires a value.'; return 2; }
+        depth_arg="$1"
+        ;;
+      --depth=*) depth_arg="${1#--depth=}" ;;
+      -h|--help)
+        cat <<'USAGE'
+Usage:
+  model-peer ask <claude|codex|gemini> [--depth N] "<focused question>"
+  command | model-peer ask <claude|codex|gemini> [--depth N]
+
+  --depth N   Max peer-chain length, 1-10 (default: 1). Depth 1 means the peer
+              answers alone. Above 1, the peer may consult a further model where
+              its provider can scope that execution to model-peer alone; peers
+              whose sandbox cannot express that stay leaves. Use -- to end
+              options when the prompt itself starts with a dash.
+USAGE
+        return 0
+        ;;
+      --) shift; if (( $# > 0 )); then rest+=("$@"); fi; break ;;
+      -*) err "unknown ask option: $1"; return 2 ;;
+      *)
+        if [[ -z "$provider" ]]; then provider="$1"; else rest+=("$1"); fi
+        ;;
+    esac
+    shift
+  done
+
+  [[ -n "$provider" ]] || { err 'ask requires a model: claude, codex, or gemini.'; return 2; }
+
+  local max_depth
+  max_depth="$(resolve_max_depth "$depth_arg")" || return 2
+
   local prompt
-  if ! prompt="$(read_prompt "$@")"; then
+  if ! prompt="$(read_prompt ${rest[@]+"${rest[@]}"})"; then
     err 'ask requires a prompt argument or piped stdin.'
     return 2
   fi
-  run_provider "$provider" "$prompt"
+  run_provider "$provider" "$max_depth" "$prompt"
 }
 
 installed_reviewers() {
@@ -347,6 +522,7 @@ PROMPT
 cmd_review() {
   local reviewers="${MODEL_PEER_REVIEWERS:-}"
   local synthesizer="${MODEL_PEER_SYNTHESIZER:-}"
+  local depth_arg=''
   local focus=''
 
   while (( $# > 0 )); do
@@ -359,14 +535,23 @@ cmd_review() {
         shift; (( $# > 0 )) || { err '--synthesizer requires a value.'; return 2; }
         synthesizer="$1"
         ;;
+      --depth)
+        shift; (( $# > 0 )) || { err '--depth requires a value.'; return 2; }
+        depth_arg="$1"
+        ;;
+      --depth=*) depth_arg="${1#--depth=}" ;;
       -h|--help)
         cat <<'USAGE'
 Usage:
-  model-peer review [--models claude,codex,gemini] [--synthesizer MODEL] ["focus"]
+  model-peer review [--models claude,codex,gemini] [--synthesizer MODEL]
+                    [--depth N] ["focus"]
 
 By default, every installed supported model reviews independently. At least two
 reviewers are required. Claude is preferred for synthesis when installed, then
 Codex, then Gemini. Set MODEL_PEER_REVIEWERS or MODEL_PEER_SYNTHESIZER to change defaults.
+
+--depth N (1-10, default 1) caps the chain length for each reviewer. At depth 1 a
+reviewer works alone. The synthesizer is always a leaf and never consults anyone.
 USAGE
         return 0
         ;;
@@ -376,6 +561,9 @@ USAGE
     esac
     shift
   done
+
+  local max_depth
+  max_depth="$(resolve_max_depth "$depth_arg")" || return 2
 
   command -v git >/dev/null 2>&1 || { err "'git' is required for review."; return 127; }
   git rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
@@ -430,7 +618,10 @@ USAGE
   for p in "${valid[@]}"; do
     printf '\n=== %s independent review ===\n\n' "$(provider_label "$p")" >&2
     prompt="$(review_prompt "$p" "$focus" "$context")"
-    if MODEL_PEER_STACK="review" run_provider "$p" "$prompt" | tee "$tmpdir/$p.txt"; then
+    # The inherited chain is preserved deliberately: at top level it is empty, so
+    # each reviewer starts fresh, but a review launched from inside a peer chain
+    # stays subject to the same depth guard and cannot escape it.
+    if run_provider "$p" "$max_depth" "$prompt" | tee "$tmpdir/$p.txt"; then
       :
     else
       err "$p review failed."
@@ -448,7 +639,10 @@ USAGE
   printf '\n=== Final synthesis (%s) ===\n\n' "$(provider_label "$synthesizer")" >&2
   prompt="$(synthesis_prompt "$focus" "$tmpdir")"
   local synth_status=0
-  if MODEL_PEER_STACK="review:synthesis" run_provider "$synthesizer" "$prompt"; then
+  # Synthesis is always a leaf: give it exactly enough depth to run and none to
+  # spend, so the final report can never be outsourced.
+  local synth_depth=$(( $(stack_depth) + 1 ))
+  if run_provider "$synthesizer" "$synth_depth" "$prompt"; then
     synth_status=0
   else
     synth_status=$?
@@ -472,7 +666,27 @@ cmd_doctor() {
   printf '  Claude  plan mode; Read/Glob/Grep only; stdin closed\n'
   printf '  Codex   read-only sandbox; ephemeral session; stdin closed\n'
   printf '  Gemini  plan mode + deny policy; extensions disabled; stdin closed\n'
-  printf '  All     recursion guard via MODEL_PEER_STACK\n'
+  printf '  All     chain guard via MODEL_PEER_STACK; no model consults itself\n'
+  printf '  All     peers never write, and never gain a general shell\n'
+
+  printf '\nNested consultation support\n'
+  for p in claude codex gemini; do
+    case "$(provider_delegation_support "$p")" in
+      namespaced) printf '  %-8s yes   execution scoped to the model-peer command namespace\n' "$(provider_label "$p")" ;;
+      sandboxed)  printf '  %-8s yes   read-only sandbox already permits it; nothing added\n' "$(provider_label "$p")" ;;
+      *)          printf '  %-8s no    cannot scope execution to model-peer alone; always a leaf\n' "$(provider_label "$p")" ;;
+    esac
+  done
+
+  local effective_depth
+  if effective_depth="$(resolve_max_depth '' 2>/dev/null)"; then
+    printf '\nPeer-chain depth limit: %s (max %s)\n' "$effective_depth" "$DEPTH_CEILING"
+  else
+    printf '\nPeer-chain depth limit: invalid MODEL_PEER_MAX_DEPTH=%s\n' "${MODEL_PEER_MAX_DEPTH:-}"
+  fi
+  if [[ -n "${MODEL_PEER_STACK:-}" ]]; then
+    printf 'Active peer chain:      %s (depth %s)\n' "$MODEL_PEER_STACK" "$(stack_depth)"
+  fi
 
   if provider_installed claude; then
     if claude auth status >/dev/null 2>&1; then
