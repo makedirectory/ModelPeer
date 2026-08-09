@@ -36,6 +36,14 @@ cat > "$TMP/bin/gemini" <<'EOF'
 set -euo pipefail
 printf 'GEMINI ARGS:' >> "$MODEL_PEER_TEST_LOG"
 printf ' <%s>' "$@" >> "$MODEL_PEER_TEST_LOG"
+# Capture the generated policy; model-peer deletes it as soon as we exit.
+prev=''
+for a in "$@"; do
+  if [[ "$prev" == '--policy' && -f "$a" ]]; then
+    { printf '\nGEMINI POLICY BEGIN\n'; cat "$a"; printf '\nGEMINI POLICY END\n'; } >> "$MODEL_PEER_TEST_LOG"
+  fi
+  prev="$a"
+done
 if [[ -t 0 ]]; then printf ' STDIN=TTY\n' >> "$MODEL_PEER_TEST_LOG"; else if IFS= read -r -t 1 x; then printf ' STDIN=%s\n' "$x" >> "$MODEL_PEER_TEST_LOG"; else printf ' STDIN=EOF\n' >> "$MODEL_PEER_TEST_LOG"; fi; fi
 printf 'gemini review output\n'
 EOF
@@ -100,16 +108,44 @@ for bad in 0 11 abc -1; do
   fi
 done
 
-# Depth 1 keeps Claude tool-restricted; depth > 1 grants only the shell needed
-# to reach model-peer, scoped by --allowedTools.
+# Depth 1 keeps Claude tool-restricted; delegation scopes execution to the
+# model-peer command namespace rather than granting a general shell.
 : > "$LOG"
 model-peer ask claude 'leaf' >/dev/null
 grep -Fq '<--tools> <Read,Glob,Grep>' "$LOG"
-! grep -Fq 'allowedTools' "$LOG"
+if grep -Fq 'allowedTools' "$LOG"; then
+  echo 'expected no --allowedTools grant at depth 1' >&2; exit 1
+fi
 : > "$LOG"
 model-peer ask claude --depth 2 'may delegate' >/dev/null
 grep -Fq '<--tools> <Read,Glob,Grep,Bash>' "$LOG"
 grep -Fq '<--allowedTools> <Bash(model-peer:*)>' "$LOG"
+
+# Core invariant: depth is a limit, not a permission. Gemini's sandbox cannot
+# scope execution to model-peer alone, so run_shell_command stays denied at every
+# depth and Gemini is always a leaf.
+for d in 1 2 10; do
+  : > "$LOG"
+  model-peer ask gemini --depth "$d" "depth $d" >/dev/null 2>"$TMP/gemini.err"
+  # The deny rule is present in the generated policy at every depth.
+  grep -Fq 'GEMINI POLICY BEGIN' "$LOG"
+  awk '/GEMINI POLICY BEGIN/,/GEMINI POLICY END/' "$LOG" | grep -Fq 'run_shell_command'
+  awk '/GEMINI POLICY BEGIN/,/GEMINI POLICY END/' "$LOG" | grep -Fq 'exit_plan_mode'
+  # And Gemini always receives leaf instructions.
+  grep -Fq 'Do not invoke Claude Code' "$LOG"
+  grep -Fq 'Remaining peer-chain depth: 0' "$LOG"
+done
+# The downgrade is reported, not silent.
+grep -Fq 'cannot initiate nested consultation' "$TMP/gemini.err"
+
+# Codex delegation adds no CLI capability; only the prompt changes.
+: > "$LOG"
+model-peer ask codex 'leaf' >/dev/null
+codex_leaf_args="$(grep -c '<--sandbox> <read-only>' "$LOG")"
+: > "$LOG"
+model-peer ask codex --depth 2 'may delegate' >/dev/null
+[[ "$(grep -c '<--sandbox> <read-only>' "$LOG")" -eq "$codex_leaf_args" ]]
+grep -Fq 'You may consult one further peer' "$LOG"
 
 # The depth limit propagates to the peer so a nested call inherits the ceiling.
 : > "$LOG"
@@ -140,7 +176,9 @@ ai-review --models claude,codex --synthesizer codex 'compat review' >/dev/null
 # Reviewers are leaves by default, and the synthesizer is a leaf at any depth.
 : > "$LOG"
 model-peer review --models claude,codex --synthesizer codex 'depth default' >/dev/null
-! grep -Fq 'Remaining peer-chain depth: 1' "$LOG"
+if grep -Fq 'Remaining peer-chain depth: 1' "$LOG"; then
+  echo 'expected reviewers to be leaves at the default depth' >&2; exit 1
+fi
 : > "$LOG"
 model-peer review --models claude,codex --synthesizer codex --depth 2 'depth two' >/dev/null
 grep -Fq 'Remaining peer-chain depth: 1' "$LOG"

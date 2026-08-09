@@ -110,11 +110,14 @@ Review options:
   --depth N              Max peer-chain length for each reviewer, 1-10 (default: 1)
 
 Peer-chain depth:
-  Depth 1 (default) means a peer answers on its own and may not consult anyone.
-  Depth N lets a chain grow to N models: claude -> codex -> gemini is depth 3.
-  Raising depth above 1 also grants peers the minimal tool needed to call out
-  (shell access), so it is a deliberate widening of the read-only sandbox.
+  Depth is a limit, never a permission. Depth 1 (default) means a peer answers on
+  its own. Depth N lets a chain grow to N models: claude -> codex -> gemini is 3.
   A model can never be consulted by itself, at any depth.
+
+  Nested consultation additionally requires limited outbound execution, which
+  Model Peer scopes as narrowly as each provider allows. Where a provider cannot
+  scope it to Model Peer alone, that peer stays a leaf rather than being granted
+  a general shell. Run 'model-peer doctor' for the per-provider matrix.
 
 Environment:
   MODEL_PEER_REVIEWERS        Default comma-separated review model list
@@ -128,7 +131,8 @@ Compatibility commands installed with Model Peer:
 USAGE
 }
 
-err() { printf 'model-peer: %s\n' "$*" >&2; }
+err() { printf '%s: %s\n' "$PROGRAM" "$*" >&2; }
+note() { printf '%s: %s\n' "$PROGRAM" "$*" >&2; }
 
 provider_label() {
   case "$1" in
@@ -183,6 +187,43 @@ resolve_max_depth() {
   printf '%s' "$depth"
 }
 
+# Depth and delegation are deliberately separate concepts:
+#
+#   depth       maximum recursion depth — a limit, never a permission
+#   delegation  permission to initiate a further consultation, and the mechanism
+#
+# Depth alone never widens what a peer can do to the host system. Delegation is
+# granted only where a provider's sandbox can constrain it to Model Peer itself.
+#
+#   claude   namespaced  Bash auto-approved only for Bash(model-peer:*)
+#   codex    sandboxed   read-only sandbox already permits this; nothing is added
+#   gemini   unsupported policy can only allow/deny run_shell_command wholesale,
+#                        so delegating would unlock the hallway to open one door
+provider_delegation_support() {
+  case "$1" in
+    claude) printf 'namespaced' ;;
+    codex)  printf 'sandboxed' ;;
+    gemini) printf 'unsupported' ;;
+    *)      printf 'unsupported' ;;
+  esac
+}
+
+# Resolve the delegation permission for a peer about to be spawned. Depth budget
+# is necessary but not sufficient: the provider must also be able to hold the
+# permission narrowly.
+resolve_delegation() {
+  local provider="$1" remaining="$2"
+  if (( remaining <= 0 )); then
+    printf 'none'
+    return
+  fi
+  case "$(provider_delegation_support "$provider")" in
+    namespaced) printf 'namespaced' ;;
+    sandboxed)  printf 'sandboxed' ;;
+    *)          printf 'none' ;;
+  esac
+}
+
 # Two independent guards: the chain may not exceed the depth limit, and a model
 # may never be consulted by itself. The second holds at every depth.
 check_chain() {
@@ -224,16 +265,20 @@ consultation_prompt() {
   local provider="$1"
   local prompt="$2"
   local remaining="$3"
-  local delegation
+  local delegation="$4"
+  local delegation_rule
 
-  if (( remaining > 0 )); then
-    delegation="You may consult one further peer with \`model-peer ask <model> \"<question>\"\` if a
-genuinely independent perspective would change your answer. $remaining more level(s) are
-permitted. Prefer answering directly: every hop costs time and dilutes accountability.
-If you do consult a peer, say which model you asked and what you took from it."
-  else
-    delegation="Do not invoke Claude Code, Codex CLI, Gemini CLI, Model Peer, or any other model.
+  if [[ "$delegation" == 'none' ]]; then
+    delegation_rule="Do not invoke Claude Code, Codex CLI, Gemini CLI, Model Peer, or any other model.
 Do not delegate the decision back to another agent."
+    remaining=0
+  else
+    delegation_rule="You may consult one further peer with \`model-peer ask <model> \"<question>\"\` if a
+genuinely independent perspective would change your answer. $remaining more level(s) are
+permitted. Consult nothing else: that command is the only execution you are authorized
+to perform. Prefer answering directly, since every hop costs time and dilutes
+accountability. If you do consult a peer, say which model you asked and what you took
+from it."
   fi
 
   cat <<PROMPT
@@ -241,7 +286,7 @@ You are being consulted as an independent engineering peer through Model Peer.
 Answer the user's focused question. Inspect the current workspace read-only when useful.
 Do not modify files.
 
-$delegation
+$delegation_rule
 
 Your advice is advisory. Project-specific rules and invariants take precedence.
 Reason independently, distinguish evidence from assumptions, and call out uncertainty.
@@ -255,7 +300,7 @@ PROMPT
 }
 
 run_claude() {
-  local prompt="$1" stack="$2" remaining="$3" max_depth="$4"
+  local prompt="$1" stack="$2" remaining="$3" max_depth="$4" delegation="$5"
   provider_installed claude || {
     err "'claude' was not found on PATH."
     err 'Install Claude Code: https://code.claude.com/docs/en/setup'
@@ -263,14 +308,14 @@ run_claude() {
   }
 
   local bridge_prompt tools
-  bridge_prompt="$(consultation_prompt Claude "$prompt" "$remaining")"
+  bridge_prompt="$(consultation_prompt Claude "$prompt" "$remaining" "$delegation")"
 
-  # Read-only inspection only. Bash is added solely so a peer can reach
-  # model-peer when the chain is allowed to grow, and is auto-approved for
-  # nothing else.
+  # Read-only inspection only. Delegation adds Bash, auto-approved for the single
+  # model-peer command namespace and nothing else. This is the narrowest grant
+  # the provider can express, not a general shell.
   tools='Read,Glob,Grep'
   local -a nested_args=()
-  if (( remaining > 0 )); then
+  if [[ "$delegation" == 'namespaced' ]]; then
     tools='Read,Glob,Grep,Bash'
     nested_args=(--allowedTools 'Bash(model-peer:*)')
   fi
@@ -287,15 +332,18 @@ run_claude() {
 }
 
 run_codex() {
-  local prompt="$1" stack="$2" remaining="$3" max_depth="$4"
+  local prompt="$1" stack="$2" remaining="$3" max_depth="$4" delegation="$5"
   provider_installed codex || {
     err "'codex' was not found on PATH."
     err 'Install Codex CLI: https://developers.openai.com/codex/cli'
     return 127
   }
 
+  # Codex flags are identical either way: --sandbox read-only already permits
+  # read-only command execution, so delegation grants no new capability here and
+  # changes only what the prompt authorizes.
   local bridge_prompt
-  bridge_prompt="$(consultation_prompt Codex "$prompt" "$remaining")"
+  bridge_prompt="$(consultation_prompt Codex "$prompt" "$remaining" "$delegation")"
 
   MODEL_PEER_STACK="$stack" MODEL_PEER_MAX_DEPTH="$max_depth" \
     codex exec \
@@ -307,15 +355,17 @@ run_codex() {
 }
 
 run_gemini() {
-  local prompt="$1" stack="$2" remaining="$3" max_depth="$4"
+  local prompt="$1" stack="$2" remaining="$3" max_depth="$4" delegation="$5"
   provider_installed gemini || {
     err "'gemini' was not found on PATH."
     err 'Install Gemini CLI: https://google-gemini.github.io/gemini-cli/docs/get-started/'
     return 127
   }
 
+  # Gemini is always a leaf: resolve_delegation never returns anything but 'none'
+  # for it, so the deny policy below is unconditional.
   local bridge_prompt tmpdir policy status
-  bridge_prompt="$(consultation_prompt Gemini "$prompt" "$remaining")"
+  bridge_prompt="$(consultation_prompt Gemini "$prompt" "$remaining" "$delegation")"
   tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/model-peer-gemini.XXXXXX")"
   policy="$tmpdir/read-only.toml"
 
@@ -333,6 +383,11 @@ decision = "deny"
 priority = 999
 
 [[rule]]
+toolName = "run_shell_command"
+decision = "deny"
+priority = 999
+
+[[rule]]
 toolName = "exit_plan_mode"
 decision = "deny"
 priority = 999
@@ -342,18 +397,6 @@ toolName = "enter_plan_mode"
 decision = "deny"
 priority = 999
 POLICY
-
-  # Shell stays denied unless the chain is allowed to grow, because reaching
-  # model-peer is the only way a Gemini peer can consult anyone.
-  if (( remaining <= 0 )); then
-    cat >> "$policy" <<'POLICY'
-
-[[rule]]
-toolName = "run_shell_command"
-decision = "deny"
-priority = 999
-POLICY
-  fi
 
   if MODEL_PEER_STACK="$stack" MODEL_PEER_MAX_DEPTH="$max_depth" \
       gemini \
@@ -384,14 +427,22 @@ run_provider() {
 
   check_chain "$provider" "$max_depth" || return 64
 
-  local stack remaining
+  local stack remaining delegation
   stack="$(push_stack "$provider")"
   remaining=$(( max_depth - $(stack_depth) - 1 ))
+  delegation="$(resolve_delegation "$provider" "$remaining")"
+
+  # A depth budget the provider cannot safely hold is reported, never silently
+  # converted into a wider sandbox.
+  if (( remaining > 0 )) && [[ "$delegation" == 'none' ]]; then
+    note "$(provider_label "$provider") cannot initiate nested consultation; answering as a leaf."
+    note "Reason: its policy engine cannot scope execution to model-peer alone. See README."
+  fi
 
   case "$provider" in
-    claude) run_claude "$prompt" "$stack" "$remaining" "$max_depth" ;;
-    codex)  run_codex  "$prompt" "$stack" "$remaining" "$max_depth" ;;
-    gemini) run_gemini "$prompt" "$stack" "$remaining" "$max_depth" ;;
+    claude) run_claude "$prompt" "$stack" "$remaining" "$max_depth" "$delegation" ;;
+    codex)  run_codex  "$prompt" "$stack" "$remaining" "$max_depth" "$delegation" ;;
+    gemini) run_gemini "$prompt" "$stack" "$remaining" "$max_depth" "$delegation" ;;
   esac
 }
 
@@ -413,9 +464,10 @@ Usage:
   command | model-peer ask <claude|codex|gemini> [--depth N]
 
   --depth N   Max peer-chain length, 1-10 (default: 1). Depth 1 means the peer
-              answers alone. Above 1, the peer may consult a further model and
-              is granted shell access to do so. Use -- to end options when the
-              prompt itself starts with a dash.
+              answers alone. Above 1, the peer may consult a further model where
+              its provider can scope that execution to model-peer alone; peers
+              whose sandbox cannot express that stay leaves. Use -- to end
+              options when the prompt itself starts with a dash.
 USAGE
         return 0
         ;;
@@ -697,6 +749,16 @@ cmd_doctor() {
   printf '  Codex   read-only sandbox; ephemeral session; stdin closed\n'
   printf '  Gemini  plan mode + deny policy; extensions disabled; stdin closed\n'
   printf '  All     chain guard via MODEL_PEER_STACK; no model consults itself\n'
+  printf '  All     peers never write, and never gain a general shell\n'
+
+  printf '\nNested consultation support\n'
+  for p in claude codex gemini; do
+    case "$(provider_delegation_support "$p")" in
+      namespaced) printf '  %-8s yes   execution scoped to the model-peer command namespace\n' "$(provider_label "$p")" ;;
+      sandboxed)  printf '  %-8s yes   read-only sandbox already permits it; nothing added\n' "$(provider_label "$p")" ;;
+      *)          printf '  %-8s no    cannot scope execution to model-peer alone; always a leaf\n' "$(provider_label "$p")" ;;
+    esac
+  done
 
   local effective_depth
   if effective_depth="$(resolve_max_depth '' 2>/dev/null)"; then
@@ -706,9 +768,6 @@ cmd_doctor() {
   fi
   if [[ -n "${MODEL_PEER_STACK:-}" ]]; then
     printf 'Active peer chain:      %s (depth %s)\n' "$MODEL_PEER_STACK" "$(stack_depth)"
-  fi
-  if (( effective_depth > 1 )) 2>/dev/null; then
-    printf 'Note: depth > 1 grants peers shell access so they can call out.\n'
   fi
 
   if provider_installed claude; then

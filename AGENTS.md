@@ -65,11 +65,42 @@ independent guards via `check_chain`:
    `MODEL_PEER_MAX_DEPTH`, then 1; ceiling 10). Exceeding it exits `64`.
 2. A model may never be consulted by itself, at any depth. Also exits `64`.
 
-`remaining = max_depth - new_depth` is the budget handed to the spawned peer. It
-drives two things that must stay in sync: the wording of `consultation_prompt`
-(whether the peer is told it may consult further), and whether the peer is granted
-the shell access it would need to do so. **Depth is not just a counter — raising it
-above 1 widens the read-only sandbox**, so treat changes there as security-relevant.
+### Depth vs. delegation
+
+These are two separate concepts and must stay separate:
+
+```text
+depth       maximum recursion depth — a limit, never a permission
+delegation  permission to initiate a further consultation, and the mechanism
+```
+
+The invariant to preserve in any change here:
+
+> Increasing depth may increase how many models can participate.
+> Increasing depth must never increase what a model can do to the host system.
+
+`remaining = max_depth - new_depth` is only a *budget*. `resolve_delegation` turns
+that budget into an actual permission, and returns `none` unless the provider can
+hold the permission narrowly (`provider_delegation_support`):
+
+- `claude` → `namespaced`: `Bash` auto-approved only for `Bash(model-peer:*)`
+- `codex` → `sandboxed`: read-only sandbox already permits it; **no flags change**
+- `gemini` → `unsupported`: its policy engine only allows or denies
+  `run_shell_command` wholesale, so it is always a leaf and its deny rules are
+  unconditional
+
+A depth budget a provider cannot safely hold is reported on stderr via `note`,
+never silently converted into a wider sandbox. If you add a provider, decide its
+delegation support explicitly; defaulting to `unsupported` is the safe answer.
+
+`consultation_prompt` takes the resolved delegation, not the raw budget — a peer
+that may not delegate is told so and sees `Remaining peer-chain depth: 0`, even if
+depth remained. Prompt and capability must never disagree.
+
+The long-term fix is a consultation broker (see the README roadmap): peers request
+a consultation from the parent process instead of executing `model-peer`, removing
+the last capability grant. Changes that deepen the current shell-based approach are
+moving away from that.
 
 `cmd_review` deliberately does not overwrite `MODEL_PEER_STACK`. At top level the
 chain is empty, so each reviewer starts fresh; a review launched from inside a peer
@@ -80,16 +111,17 @@ be a leaf by passing it a depth limit of exactly `stack_depth + 1`.
 
 Each runner is a read-only consultation contract, tightened per vendor:
 
-| Provider | Baseline | At `remaining > 0` |
+| Provider | Baseline | With delegation |
 |---|---|---|
 | `claude` | plan mode, `--tools Read,Glob,Grep`, stdin closed | adds `Bash`, auto-approved only for `Bash(model-peer:*)` |
-| `codex` | `--sandbox read-only --ephemeral`, stdin closed | unchanged (sandbox already permits read-only shell) |
-| `gemini` | plan mode, generated deny policy, `-e none`, stdin closed | `run_shell_command` deny rule omitted |
+| `codex` | `--sandbox read-only --ephemeral`, stdin closed | identical flags; only the prompt differs |
+| `gemini` | plan mode, generated deny policy, `-e none`, stdin closed | n/a — never delegates |
 
 Gemini's policy TOML is generated per call into a temp dir and removed afterwards.
-Deny rules for `write_file`, `replace`, `enter_plan_mode`, and `exit_plan_mode`
-always apply — the last two matter because exiting plan mode is how a peer would
-escape read-only.
+Deny rules for `write_file`, `replace`, `run_shell_command`, `enter_plan_mode`, and
+`exit_plan_mode` are unconditional — the Plan-mode pair matters because exiting plan
+mode is how a peer would escape read-only. The smoke-test stub copies the generated
+policy into the log so these rules can be asserted at every depth.
 
 Every runner closes stdin with `</dev/null`. A nested CLI that inherits a live
 stdin can hang forever waiting for input.

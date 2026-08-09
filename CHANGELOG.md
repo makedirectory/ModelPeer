@@ -11,9 +11,14 @@ All notable changes to Model Peer are documented here.
   down the chain, so a peer cannot raise its own ceiling.
 - Depth-aware consultation prompts: peers are told how much chain depth remains and
   whether they may delegate.
-- Above depth 1, peers are granted the minimal tool needed to call out — `Bash`
-  auto-approved only for `Bash(model-peer:*)` for Claude, and the `run_shell_command`
-  deny rule omitted for Gemini. Write and Plan-mode deny rules always apply.
+- Delegation as a concept distinct from depth. Depth is a limit and never a
+  permission; delegation is the separate permission to initiate a further
+  consultation, granted only where a provider can scope it to Model Peer alone.
+  Claude gets `Bash` auto-approved solely for `Bash(model-peer:*)`; Codex gains no
+  new capability at all; Gemini never delegates, because its policy engine can only
+  allow or deny `run_shell_command` wholesale. A depth budget a provider cannot
+  safely hold is reported on stderr rather than converted into a wider sandbox.
+- `model-peer doctor` prints the per-provider nested-consultation matrix.
 - `make sync` / `tools/sync-installer.sh` to regenerate the copy of `bin/model-peer`
   embedded in `install.sh`, and `make check-sync` to fail the build on drift.
 - `model-peer doctor` reports the effective depth limit and any active chain.
@@ -31,6 +36,9 @@ All notable changes to Model Peer are documented here.
 
 ### Fixed
 
+- CI had never passed on this repository. `make lint` failed shellcheck from the
+  first commit (`SC2034`: `PROGRAM` was set but never used). `err` now uses it, and
+  the lint target is clean on both ubuntu and macOS runners.
 - Smoke-test stubs used `read -t 0.05`, which is invalid on the Bash 3.2 that macOS
   ships and printed an error on every stubbed call.
 

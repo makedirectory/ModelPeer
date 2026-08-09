@@ -214,16 +214,18 @@ consultation. `--sandbox read-only` prevents normal workspace writes, while
 
 Claude consultation runs non-interactively in Plan mode, with only `Read`, `Glob`,
 and `Grep` exposed. Bash and file-edit tools are intentionally not provided, and
-stdin is closed. Above `--depth 1`, `Bash` is added and auto-approved solely for
-`Bash(model-peer:*)` so the peer can consult the next model.
+stdin is closed. This is the only provider whose boundary `--depth` changes: above
+depth 1, `Bash` is added and auto-approved solely for `Bash(model-peer:*)`, which
+is the narrowest grant Claude Code can express. The
+[consultation broker](#consultation-broker) is intended to remove even this.
 
 ### Gemini
 
 Gemini consultation starts in `--approval-mode plan`, which Gemini documents as a
 strict read-only mode. Model Peer adds a temporary high-priority policy denying
 `write_file`, `replace`, shell execution, and entering/exiting Plan mode. Extensions
-are disabled with `-e none`, and stdin is closed. Above `--depth 1`, only the shell
-deny rule is lifted; the write and Plan-mode rules always apply.
+are disabled with `-e none`, and stdin is closed. **These rules are unconditional**
+— `--depth` never relaxes them, which is why a Gemini peer is always a leaf.
 
 This is defense in depth, not a formal security boundary. Upstream CLI behavior can
 change. Model Peer deliberately favors conservative consultation over autonomous
@@ -249,12 +251,50 @@ depth 3     you -> claude -> codex -> gemini
 Valid values are `1` to `10`. Set a different default with `MODEL_PEER_MAX_DEPTH`.
 The limit propagates down the chain, so a peer cannot raise its own ceiling.
 
-> **Raising depth widens the sandbox.** At depth 1 a Claude peer gets `Read`, `Glob`,
-> and `Grep`, and a Gemini peer has `run_shell_command` denied outright — neither can
-> reach `model-peer` even if asked. Above depth 1 they are granted the shell access
-> needed to call out (for Claude, auto-approved only for `Bash(model-peer:*)`). That
-> is a deliberate trade, which is why depth is opt-in per invocation rather than on
-> by default.
+### Depth is a limit, not a permission
+
+Model Peer keeps two concepts separate, and the distinction is the whole security
+model:
+
+```text
+depth       maximum recursion depth — how many models may participate
+delegation  permission to initiate a further consultation, and by what mechanism
+```
+
+The invariant:
+
+> Increasing depth may increase **how many models can participate**.
+> Increasing depth must never increase **what a model can do to the host system**.
+
+Nested consultation nevertheless requires limited outbound execution capability for
+some providers. Model Peer restricts that capability as narrowly as the provider
+permits, and where a provider cannot express a narrow enough restriction, the peer
+stays a leaf rather than being handed a general shell.
+
+| Provider | Nested consultation | What delegation actually grants |
+|---|---|---|
+| Claude | yes | `Bash` auto-approved **only** for `Bash(model-peer:*)` |
+| Codex | yes | nothing new — `--sandbox read-only` already permits read-only execution |
+| Gemini | **no** | its policy engine can only allow or deny `run_shell_command` wholesale |
+
+Gemini is deliberately excluded. Lifting a blanket shell deny to open one door
+would unlock the hallway, and an uneven provider matrix is more honest than
+pretending every sandbox has equivalent primitives. A Gemini peer asked to
+participate at depth > 1 answers as a leaf and says so on stderr:
+
+```text
+model-peer: Gemini cannot initiate nested consultation; answering as a leaf.
+```
+
+So the residual widening is exactly one thing: at depth > 1, a Claude peer holds
+`Bash` scoped to a single command namespace. That is why nested consultation is
+opt-in per invocation rather than on by default.
+
+> **Roadmap.** This is a known implementation limitation, not the intended end
+> state. Future versions will broker nested consultations through Model Peer itself
+> — a peer will *request* a consultation from the parent process rather than
+> executing `model-peer` — so peers remain fully read-only at every depth. See
+> [Roadmap](#roadmap).
 
 ### Chain guards
 
@@ -376,6 +416,63 @@ not consume model usage.
 `install.sh` must work standalone when piped from `curl`, so it embeds a verbatim
 copy of `bin/model-peer`. Run `make sync` after changing that script; `make test`
 refuses to run while the two are out of step.
+
+## Roadmap
+
+### Consultation broker
+
+Today a peer that is permitted to consult another model does so by executing
+`model-peer` itself, which requires granting it outbound execution capability. The
+intended architecture inverts that: Model Peer owns the recursion, and a peer
+*requests* a consultation from the parent process rather than running a command.
+
+```text
+                model-peer
+                    |
+          +---------+---------+
+          v                   v
+       Claude               Codex
+          |
+          | "I'd like a Gemini opinion"
+          v
+      model-peer broker
+          |
+          v
+        Gemini
+```
+
+The parent already knows the current depth, the maximum, the models already
+visited, the read-only requirements, and the recursion policy, so it can adjudicate
+centrally:
+
+```text
+Claude requests Gemini
+Current depth: 1
+Maximum: 2
+Gemini not already in call chain
+-> allowed
+```
+
+Claude never needs `Bash` at all, which restores the strongest possible guarantee:
+
+> Peers remain read-only regardless of consultation depth.
+
+Once recursion is brokered centrally, richer policy becomes cheap to enforce —
+per-model call budgets, total consultation budgets, and full cycle detection rather
+than the self-consultation check that is possible today:
+
+```bash
+model-peer review --depth 2 --max-consultations 5 --models claude,codex,gemini
+```
+
+```text
+Maximum depth:          2
+Maximum peer calls:     5
+Maximum calls/model:    2
+Cycle detection:        on
+Write access:           never
+Shell access to peers:  never
+```
 
 ## Design principles
 
