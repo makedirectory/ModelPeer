@@ -4,8 +4,8 @@ test: check-sync
 	bash tests/smoke.sh
 
 lint:
-	bash -n bin/model-peer bin/ask-claude bin/ask-codex bin/ask-gemini bin/ai-review install.sh uninstall.sh tests/smoke.sh tools/sync-installer.sh
-	@if command -v shellcheck >/dev/null 2>&1; then shellcheck bin/* install.sh uninstall.sh tests/smoke.sh tools/sync-installer.sh; else echo "shellcheck not installed; skipped"; fi
+	bash -n bin/model-peer bin/ask-claude bin/ask-codex bin/ask-gemini bin/ai-review install.sh uninstall.sh tests/smoke.sh tools/*.sh
+	@if command -v shellcheck >/dev/null 2>&1; then shellcheck bin/* install.sh uninstall.sh tests/smoke.sh tools/*.sh; else echo "shellcheck not installed; skipped"; fi
 
 # install.sh embeds a verbatim copy of bin/model-peer so the curl install path
 # stays standalone. Regenerate it after any change to bin/model-peer.
