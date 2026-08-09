@@ -1,0 +1,73 @@
+/**
+ * Model Peer docs theme.
+ *
+ * Deliberately restrained: this is a terminal tool, so the palette stays close to
+ * a good terminal and the ASCII diagrams in the docs are treated as first-class
+ * content rather than incidental code blocks.
+ */
+
+:root {
+  --ifm-color-primary: #2f6f5e;
+  --ifm-color-primary-dark: #2a6455;
+  --ifm-color-primary-darker: #285e50;
+  --ifm-color-primary-darkest: #204d42;
+  --ifm-color-primary-light: #347a67;
+  --ifm-color-primary-lighter: #37806c;
+  --ifm-color-primary-lightest: #3f917b;
+
+  --ifm-code-font-size: 92%;
+  --ifm-font-family-monospace: ui-monospace, SFMono-Regular, 'SF Mono', Menlo,
+    Consolas, 'Liberation Mono', monospace;
+  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.08);
+}
+
+[data-theme='dark'] {
+  --ifm-color-primary: #6fd0b4;
+  --ifm-color-primary-dark: #57c8a7;
+  --ifm-color-primary-darker: #4ac3a0;
+  --ifm-color-primary-darkest: #33a385;
+  --ifm-color-primary-light: #87d8c1;
+  --ifm-color-primary-lighter: #93dcc8;
+  --ifm-color-primary-lightest: #b8e8dc;
+
+  --ifm-background-color: #16181d;
+  --docusaurus-highlighted-code-line-bg: rgba(255, 255, 255, 0.1);
+}
+
+/* The ASCII chain/flow diagrams carry real meaning; keep them tight and
+   readable, and let them scroll horizontally instead of wrapping. */
+.theme-code-block pre code {
+  line-height: 1.45;
+}
+
+pre code .token.plain {
+  white-space: pre;
+}
+
+/* Tables in this doc set are mostly capability matrices — dense and comparative,
+   so they read better without stretched columns. */
+.markdown table {
+  display: table;
+  width: 100%;
+  font-size: 0.94rem;
+}
+
+.markdown table th {
+  white-space: nowrap;
+}
+
+/* Blockquotes are used for the design invariants, which should feel like
+   statements of record rather than asides. */
+.markdown blockquote {
+  border-left: 3px solid var(--ifm-color-primary);
+  background: var(--ifm-color-emphasis-100);
+  padding: 0.85rem 1.1rem;
+}
+
+.markdown blockquote > :last-child {
+  margin-bottom: 0;
+}
+
+.footer--dark {
+  --ifm-footer-background-color: #14161a;
+}
