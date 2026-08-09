@@ -484,10 +484,11 @@ Shell access to peers:  never
 
 ## License
 
-MIT. See [`LICENSE`](LICENSE).
+MIT, Copyright (c) 2026 Make Directory Developers, LLC. See [`LICENSE`](LICENSE).
 
 ## Disclaimer
 
-Model Peer is an independent open-source project. It is not affiliated with,
-endorsed by, or sponsored by Anthropic, OpenAI, or Google. Claude, Codex, and
-Gemini are trademarks of their respective owners.
+Model Peer is an independent open-source project maintained by Make Directory
+Developers, LLC. It is not affiliated with, endorsed by, or sponsored by Anthropic,
+OpenAI, or Google. Claude, Codex, and Gemini are trademarks of their respective
+owners.
