@@ -2,7 +2,7 @@
 
 All notable changes to Model Peer are documented here.
 
-## Unreleased
+## 0.2.0 - 2026-08-09
 
 ### Added
 
@@ -18,10 +18,11 @@ All notable changes to Model Peer are documented here.
   new capability at all; Gemini never delegates, because its policy engine can only
   allow or deny `run_shell_command` wholesale. A depth budget a provider cannot
   safely hold is reported on stderr rather than converted into a wider sandbox.
-- `model-peer doctor` prints the per-provider nested-consultation matrix.
+- `model-peer doctor` reports the per-provider nested-consultation matrix, the
+  effective depth limit, and any active chain.
 - `make sync` / `tools/sync-installer.sh` to regenerate the copy of `bin/model-peer`
   embedded in `install.sh`, and `make check-sync` to fail the build on drift.
-- `model-peer doctor` reports the effective depth limit and any active chain.
+- `tools/bump-version.sh` to rewrite the release string everywhere it is duplicated.
 
 ### Changed
 
@@ -41,6 +42,8 @@ All notable changes to Model Peer are documented here.
   the lint target is clean on both ubuntu and macOS runners.
 - Smoke-test stubs used `read -t 0.05`, which is invalid on the Bash 3.2 that macOS
   ships and printed an error on every stubbed call.
+- The README's one-line install pointed at a `YOUR_GITHUB_USERNAME` placeholder, so
+  the documented `curl` command could never have worked.
 
 ## 0.1.0 - 2026-08-07
 

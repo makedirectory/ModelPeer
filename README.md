@@ -107,18 +107,16 @@ For interactive dependency/auth setup:
 Model Peer never asks you to paste an API key or password into its installer.
 Vendor login flows remain vendor-owned.
 
-### One-line install after publishing
-
-After you create the GitHub repository, replace `YOUR_GITHUB_USERNAME` below:
+### One-line install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/YOUR_GITHUB_USERNAME/model-peer/v0.1.0/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/makedirectory/ModelPeer/v0.2.0/install.sh | bash
 ```
 
 Interactive setup:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/YOUR_GITHUB_USERNAME/model-peer/v0.1.0/install.sh | bash -s -- --setup
+curl -fsSL https://raw.githubusercontent.com/makedirectory/ModelPeer/v0.2.0/install.sh | bash -s -- --setup
 ```
 
 As with any remote shell installer, inspect it before piping it into a shell.
@@ -482,7 +480,7 @@ Shell access to peers:  never
 4. **Project rules win** — local invariants outrank generic model advice.
 5. **No credential handling** — authentication stays with official vendor CLIs.
 6. **Bounded chains** — depth is capped and opt-in, and no model ever consults itself.
-7. **Review before autonomy** — v0.1.0 analyzes; it does not automatically apply fixes.
+7. **Review before autonomy** — v0.2.0 analyzes; it does not automatically apply fixes.
 
 ## License
 

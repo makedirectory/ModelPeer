@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="0.1.0"
+VERSION="0.2.0"
 PROGRAM="model-peer"
 
 usage() {
   cat <<'USAGE'
-Model Peer v0.1.0 — cross-model peer review for coding agents.
+Model Peer v0.2.0 — cross-model peer review for coding agents.
 
 Usage:
   model-peer ask claude "<focused question>"
