@@ -29,15 +29,28 @@ replace() {
   rm -f "$tmp"
 }
 
+# Every file that pins the version: the CLI banner, the installer, the pinned curl
+# URLs in the README and the docs install page, the docs package manifest, and the
+# smoke-test assertion.
+FILES=(
+  bin/model-peer
+  install.sh
+  README.md
+  tests/smoke.sh
+  documentation/docs/install.md
+  documentation/package.json
+)
+
 printf '%s\n' "$new" > VERSION
-for f in bin/model-peer install.sh README.md tests/smoke.sh; do
+for f in "${FILES[@]}"; do
+  [[ -f "$f" ]] || { echo "bump-version: missing $f" >&2; exit 1; }
   replace "$f"
 done
 
 # install.sh embeds bin/model-peer verbatim; regenerate rather than trust the sed.
 bash tools/sync-installer.sh >/dev/null
 
-remaining="$(grep -rlF "$old" bin install.sh README.md tests/smoke.sh VERSION 2>/dev/null || true)"
+remaining="$(grep -rlF "$old" bin VERSION "${FILES[@]}" 2>/dev/null || true)"
 if [[ -n "$remaining" ]]; then
   echo "bump-version: $old still present in:" >&2
   printf '%s\n' "$remaining" | sed 's/^/  /' >&2
