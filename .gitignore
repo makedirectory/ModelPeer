@@ -13,3 +13,17 @@ node_modules/
 documentation/build/
 documentation/.docusaurus/
 documentation/.cache-loader/
+
+# Claude
+.claude/*
+!.claude/rules/
+!.claude/rules/**
+
+# Codex
+.codex/*
+!.codex/rules/
+!.codex/rules/**
+
+# Gemini
+.gemini/*
+!.gemini/global_rules.md
