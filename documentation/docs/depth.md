@@ -1,7 +1,7 @@
 ---
 id: depth
 title: Peer-chain depth
-sidebar_position: 5
+sidebar_position: 6
 ---
 
 # Peer-chain depth

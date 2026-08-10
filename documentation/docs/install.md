@@ -99,8 +99,25 @@ model-peer doctor
 ```
 
 `doctor` reports which CLIs are installed, whether authentication looks available,
-the safety defaults in force, the per-provider nested-consultation matrix, and the
-effective peer-chain depth limit.
+the safety defaults in force, the per-provider nested-consultation matrix, the
+effective peer-chain depth limit, and whether the project you are standing in has
+agent rules installed.
+
+## Set up a project
+
+Installing Model Peer gives you the command. It does not yet give the coding agent
+in a repository any reason to use it. Run this once per project:
+
+```bash
+cd ~/code/your-project
+model-peer init
+```
+
+That writes the consultation rules where Claude Code, Codex, and Gemini each read
+them, plus a `/peer-review` slash command for Claude Code. Commit the result and
+your teammates get it too.
+
+→ [In your workflow](workflow)
 
 ## Uninstall
 
@@ -108,5 +125,6 @@ effective peer-chain depth limit.
 ./uninstall.sh
 ```
 
-This removes Model Peer commands only. It does not uninstall vendor CLIs or touch
-their credentials or configuration.
+This removes Model Peer commands only. It does not uninstall vendor CLIs, touch
+their credentials or configuration, or remove rules files from your projects —
+those are yours, and are committed to your repositories.

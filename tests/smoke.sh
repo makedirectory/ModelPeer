@@ -197,6 +197,144 @@ if MODEL_PEER_STACK='claude:codex' model-peer review --models claude,codex 'nest
   echo 'expected nested review to be blocked by the depth guard' >&2; exit 1
 fi
 
+# Repo rules installation. `init` must be safe to re-run, must never rewrite
+# content outside its managed block, and must only write paths the vendor CLIs
+# actually load.
+RULES_REPO="$TMP/rules-repo"
+mkdir -p "$RULES_REPO"
+cd "$RULES_REPO"
+git init -q
+
+# --dry-run reports without writing anything.
+model-peer init --dry-run > "$TMP/init-dry.txt"
+grep -Fq 'dry run' "$TMP/init-dry.txt"
+grep -Fq 'AGENTS.md' "$TMP/init-dry.txt"
+[[ ! -e AGENTS.md ]]
+[[ ! -e .claude ]]
+
+# Default layout: one real AGENTS.md, with CLAUDE.md and GEMINI.md symlinked to
+# it, plus the Claude Code slash command.
+model-peer init >/dev/null
+[[ -f AGENTS.md && ! -L AGENTS.md ]]
+[[ "$(readlink CLAUDE.md)" == 'AGENTS.md' ]]
+[[ "$(readlink GEMINI.md)" == 'AGENTS.md' ]]
+[[ -f .claude/commands/peer-review.md ]]
+grep -Fq '<!-- BEGIN MODEL PEER RULES -->' AGENTS.md
+grep -Fq '<!-- END MODEL PEER RULES -->' AGENTS.md
+grep -Fq 'model-peer review' AGENTS.md
+# A peer that loads this file mid-consultation must be told to stand down.
+grep -Fq 'while acting as a peer' AGENTS.md
+# Codex and Gemini have no per-repo rules directory; writing one would be inert.
+[[ ! -e .codex ]]
+[[ ! -e .gemini ]]
+
+# Re-running is idempotent and check passes.
+cp AGENTS.md "$TMP/agents-first.md"
+model-peer init >/dev/null
+cmp "$TMP/agents-first.md" AGENTS.md
+model-peer rules check >/dev/null
+
+# A stale block is detected and repaired without touching the rest of the file.
+printf '\n# Local notes\n\nKeep these.\n' >> AGENTS.md
+sed 's/outlived two of your own/outlived one of your own/' AGENTS.md > "$TMP/tampered" && cat "$TMP/tampered" > AGENTS.md
+if model-peer rules check >/dev/null 2>&1; then
+  echo 'expected rules check to fail on a stale block' >&2; exit 1
+else
+  [[ $? -eq 1 ]]
+fi
+model-peer init >/dev/null
+model-peer rules check >/dev/null
+grep -Fq '# Local notes' AGENTS.md
+grep -Fq 'Keep these.' AGENTS.md
+
+# `rules check` fails in a project that has no rules at all.
+mkdir -p "$TMP/no-rules"
+if model-peer rules check --dir "$TMP/no-rules" >/dev/null 2>&1; then
+  echo 'expected rules check to fail with no rules installed' >&2; exit 1
+else
+  [[ $? -eq 1 ]]
+fi
+
+# --split writes one tailored file per CLI, at the path that CLI actually reads,
+# so each harness sees only its own rules.
+SPLIT_REPO="$TMP/split-repo"
+mkdir -p "$SPLIT_REPO"
+cd "$SPLIT_REPO"
+git init -q
+printf '# House rules\n\nNever commit to main.\n' > AGENTS.md
+model-peer init --split >/dev/null
+[[ -f .claude/rules/cross-model-consultation.md ]]
+[[ -f GEMINI.md && ! -L GEMINI.md ]]
+[[ ! -e CLAUDE.md ]]
+grep -Fq 'Never commit to main.' AGENTS.md
+grep -Fq 'You are Codex.' AGENTS.md
+grep -Fq 'You are Gemini.' GEMINI.md
+grep -Fq 'You are Claude Code.' .claude/rules/cross-model-consultation.md
+model-peer rules check >/dev/null
+
+# An existing regular CLAUDE.md keeps its content instead of being replaced by a
+# symlink, and a foreign symlink is left alone unless --force is given.
+EDGE_REPO="$TMP/edge-repo"
+mkdir -p "$EDGE_REPO"
+cd "$EDGE_REPO"
+git init -q
+printf '# Mine\n\nDo not clobber.\n' > CLAUDE.md
+ln -s ../elsewhere.md GEMINI.md
+model-peer init > "$TMP/init-edge.txt"
+[[ ! -L CLAUDE.md ]]
+grep -Fq 'Do not clobber.' CLAUDE.md
+grep -Fq '<!-- BEGIN MODEL PEER RULES -->' CLAUDE.md
+[[ "$(readlink GEMINI.md)" == '../elsewhere.md' ]]
+grep -Fq 'skipped' "$TMP/init-edge.txt"
+model-peer init --force >/dev/null
+[[ "$(readlink GEMINI.md)" == 'AGENTS.md' ]]
+
+# --agents narrows what is written; --no-command skips the slash command.
+ONE_REPO="$TMP/one-repo"
+mkdir -p "$ONE_REPO"
+cd "$ONE_REPO"
+git init -q
+model-peer init --agents codex --no-command >/dev/null
+[[ -f AGENTS.md ]]
+[[ ! -e CLAUDE.md ]]
+[[ ! -e GEMINI.md ]]
+[[ ! -e .claude ]]
+
+# Invalid input is rejected with the usage exit code.
+for bad_args in '--agents bogus' '--split extra' '--nope'; do
+  # shellcheck disable=SC2086
+  if model-peer init $bad_args >/dev/null 2>&1; then
+    echo "expected 'model-peer init $bad_args' to be rejected" >&2; exit 1
+  else
+    [[ $? -eq 2 ]]
+  fi
+done
+if model-peer rules bogus >/dev/null 2>&1; then
+  echo 'expected an unknown rules subcommand to be rejected' >&2; exit 1
+else
+  [[ $? -eq 2 ]]
+fi
+if model-peer rules print --profile nope >/dev/null 2>&1; then
+  echo 'expected an unknown rules profile to be rejected' >&2; exit 1
+else
+  [[ $? -eq 2 ]]
+fi
+
+# `rules print` writes to stdout and touches nothing. Redirect rather than piping
+# into `grep -q`: under pipefail, grep exiting on the first match would kill the
+# producer with SIGPIPE and fail the pipeline.
+cd "$TMP/no-rules"
+model-peer rules print > "$TMP/print-shared.md"
+grep -Fq '<!-- BEGIN MODEL PEER RULES -->' "$TMP/print-shared.md"
+model-peer rules print --profile gemini > "$TMP/print-gemini.md"
+grep -Fq 'You are Gemini.' "$TMP/print-gemini.md"
+model-peer rules print --command > "$TMP/print-command.md"
+grep -Fq 'allowed-tools: Bash(model-peer:*)' "$TMP/print-command.md"
+[[ -z "$(ls -A "$TMP/no-rules")" ]]
+
+# The shipped template must match what `init` writes, so the docs cannot drift.
+model-peer rules print | diff -u - "$ROOT/examples/AGENTS.md"
+
 # Installer must reproduce the repository binaries exactly.
 cd "$ROOT"
 bash install.sh --bin-dir "$MODEL_PEER_BIN_DIR" >/dev/null

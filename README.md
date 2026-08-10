@@ -64,29 +64,47 @@ each vendor CLI.
 
 → [Full install guide](https://makedirectory.github.io/ModelPeer/install)
 
+## Set up a project
+
+Installing Model Peer globally gives *you* a command. It does not give the coding
+agent in your repository a habit. One command per project fixes that:
+
+```bash
+cd ~/code/your-project
+model-peer init
+```
+
+```text
+  created   AGENTS.md
+  linked    CLAUDE.md -> AGENTS.md
+  linked    GEMINI.md -> AGENTS.md
+  created   .claude/commands/peer-review.md (/peer-review)
+```
+
+Now the agent consults a peer on its own — before an architecture decision, on a
+bug that has outlived two hypotheses, on anything security-sensitive — and tells
+you which model it asked and whether it took the advice. In Claude Code you also
+get `/peer-review` for a full cross-model review of the current diff.
+
+Commit those files and your team gets the same behavior. Re-running only rewrites
+the block between its own markers, so your existing rules are safe. Prefer one
+tailored file per CLI? `model-peer init --split`.
+
+→ [In your workflow](https://makedirectory.github.io/ModelPeer/workflow) ·
+[Agent rules](https://makedirectory.github.io/ModelPeer/agent-rules)
+
 ## Commands
 
 ```bash
 model-peer ask <claude|codex|gemini> "<focused question>"   # consult one peer
 model-peer review ["focus instructions"]                    # cross-model review
+model-peer init [--split]                                   # install repo rules
+model-peer rules <install|print|check>                      # manage those rules
 model-peer doctor                                           # check setup
 ```
 
 → [Usage](https://makedirectory.github.io/ModelPeer/usage) ·
 [CLI reference](https://makedirectory.github.io/ModelPeer/reference)
-
-## Make it automatic
-
-Consultation only feels natural once your agent knows *when* to reach for a peer.
-Copy [`examples/AGENTS.md`](examples/AGENTS.md) into your project and symlink it, so
-all three CLIs read one set of rules:
-
-```bash
-ln -sfn AGENTS.md CLAUDE.md
-ln -sfn AGENTS.md GEMINI.md
-```
-
-→ [Agent rules](https://makedirectory.github.io/ModelPeer/agent-rules)
 
 ## Safety
 

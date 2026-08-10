@@ -97,5 +97,6 @@ official CLI.
 
 - [Install](install) and authenticate the CLIs you want
 - [Usage](usage) for `ask`, `review`, and `doctor`
-- [Agent rules](agent-rules) to make consultation automatic
+- [In your workflow](workflow) — `model-peer init`, and how this fits day to day
+- [Agent rules](agent-rules) for what those rules say and why
 - [Peer-chain depth](depth) for the security model

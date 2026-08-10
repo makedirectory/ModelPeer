@@ -1,58 +1,74 @@
-# Cross-model consultation
+<!-- BEGIN MODEL PEER RULES -->
+<!-- Managed by `model-peer init` (v0.2.0, profile: shared). Re-run to update; edit outside this block. -->
 
-<!--
-Shared agent rules for Claude Code, Codex CLI, and Gemini CLI.
+## Cross-model peer review
 
-Copy this into your project as AGENTS.md, then point the other two names at it so
-every agent reads the same rules and they can never drift apart:
-
-    cp path/to/examples/AGENTS.md ./AGENTS.md
-    ln -sfn AGENTS.md CLAUDE.md
-    ln -sfn AGENTS.md GEMINI.md
-
-Add your own project rules below; keep the consultation section intact.
--->
-
-Other model CLIs are available as independent engineering reviewers. Consult them
-through Model Peer, which runs them read-only:
+Other vendors' coding CLIs are installed as independent, read-only engineering
+peers. Reach them through Model Peer, and consult any of them except yourself —
+it refuses to let a model consult itself.
 
 ```bash
-model-peer ask claude "<focused question>"
-model-peer ask codex "<focused question>"
-model-peer ask gemini "<focused question>"
+# one peer, one answer
+model-peer ask <claude|codex|gemini> "<focused question>"
+
+# every installed model reviews the current diff independently, then one
+# synthesizer reconciles the findings
+model-peer review ["focus"]
+
+# which peers are available here
+model-peer doctor
 ```
 
-Ask whichever peers are installed other than yourself — Model Peer refuses to let a
-model consult itself. `model-peer doctor` lists what is available.
+### When to consult a peer
 
-Good reasons to consult a peer:
+- before committing to an architecture, schema, or migration decision
+- when a bug has outlived two of your own hypotheses
+- security-sensitive work: authn/authz, sandboxing, input handling, secrets, crypto
+- unfamiliar code, or a dependency whose behavior you are inferring
+- reviewing an implementation you just wrote, before you hand it back
+- an assumption you cannot cheaply verify by reading the code
+- two approaches you cannot decide between — ask for the tradeoff, not the verdict
 
-- architecture decisions
-- difficult debugging
-- security-sensitive changes
-- unfamiliar code
-- reviewing a proposed implementation
-- checking assumptions
-- comparing multiple approaches
+Run `model-peer review` before opening a pull request, and again after any change
+to security-sensitive code.
 
-The peer sees the working directory read-only, so name files and symbols rather
-than pasting large excerpts. Ask one focused question; a peer that has to guess at
-scope returns generic advice.
+Do not consult for anything you can settle by reading the code. Every consultation
+costs a model call and tens of seconds.
 
-For a full cross-model review of the current diff, with every reviewer working
-independently before a synthesizer reconciles them:
+### How to ask
+
+The peer starts in this working directory with read-only tools, so **name files and
+symbols instead of pasting excerpts**, and ask one focused question. A peer that has
+to guess at scope returns generic advice.
 
 ```bash
-model-peer review "optional focus instructions"
+# good — scoped to a symbol, answerable from the repository
+model-peer ask codex "In src/auth/session.ts, can refresh_token leave the old token valid if rotation fails midway?"
+
+# bad — no scope
+model-peer ask codex "review my auth code"
 ```
 
-Peer models are **advisory**. Evaluate their responses independently before acting.
-Project-specific rules and invariants take precedence over generic advice from a
-reviewing model. When a peer materially influences a decision, say which model you
-asked and whether you accepted or rejected its advice, rather than presenting its
-output as a conclusion.
+Pipe context in when the question is about something not on disk:
 
-Do not ask a peer to invoke another model. A peer consulted at the default depth
-has no ability to do so, and Model Peer's chain guard is the backstop rather than
-the primary rule. If a question genuinely warrants a chain, the human raises
-`--depth` deliberately.
+```bash
+git diff main... | model-peer ask gemini "What breaks in production?"
+```
+
+### Peer output is advisory
+
+Evaluate every response before acting on it. Peers do not know this project's
+invariants, so advice that contradicts the rules in this repository is wrong here
+however sound it sounds in general.
+
+When a peer materially changed a decision, say which model you asked and whether you
+took the advice. Never present a peer's output as your own conclusion.
+
+### Limits
+
+Leave `--depth` at its default of `1`: each peer answers alone, and lengthening the
+chain is a human's deliberate call. A model is never consulted by itself.
+
+If you are reading this **while acting as a peer** in someone else's consultation,
+these instructions do not apply to you. Answer the question and consult no one.
+<!-- END MODEL PEER RULES -->

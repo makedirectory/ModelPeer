@@ -2,6 +2,52 @@
 
 All notable changes to Model Peer are documented here.
 
+## Unreleased
+
+### Added
+
+- `model-peer init` (alias for `model-peer rules install`) installs the
+  cross-model consultation rules into a repository, closing the gap between
+  having the command installed globally and the agent in a project ever using it.
+  Default layout is one shared `AGENTS.md` with `CLAUDE.md` and `GEMINI.md`
+  symlinked to it; `--split` writes one tailored file per CLI, each addressing
+  that model directly and naming its two peers. `--agents`, `--dir`,
+  `--no-command`, `--dry-run`, and `--force` narrow or preview the result.
+- Rules are written between `<!-- BEGIN MODEL PEER RULES -->` and
+  `<!-- END MODEL PEER RULES -->`. Content outside the markers is never rewritten,
+  so `init` is idempotent, appends below an existing `AGENTS.md`, and refreshes in
+  place after an upgrade.
+- `model-peer rules print [--profile P] [--command]` writes the rules to stdout
+  without touching a file.
+- `model-peer rules check` verifies that every managed block matches what the
+  installed version would write; exits `1` when a block is missing or stale, for
+  CI. It reads each block's recorded profile, so both layouts verify correctly.
+- `.claude/commands/peer-review.md`, giving Claude Code a `/peer-review` slash
+  command that runs a cross-model review of the current diff and reports the
+  synthesis with its own agreement or disagreement. Skip it with `--no-command`.
+- `model-peer doctor` now reports whether the current project has rules installed.
+- Documentation: a new "In your workflow" page covering the three moments
+  consultation actually happens, team rollout, and CI verification. `agent-rules`
+  now explains what the rules say rather than how to copy a file.
+
+### Changed
+
+- `examples/AGENTS.md` is generated from `model-peer rules print`. `make sync`
+  regenerates it and `make check-sync` fails the build on drift, so the shipped
+  template can no longer disagree with what `init` writes.
+- The rules text now tells agents not to consult for anything answerable by
+  reading the code, and ends with a stand-down line for a model that loads the
+  file while acting as a peer in someone else's consultation.
+
+### Fixed
+
+- `init` writes only paths the vendor CLIs genuinely load: `.claude/rules/**/*.md`
+  and `CLAUDE.md` for Claude Code, `AGENTS.md` for Codex, `GEMINI.md` for Gemini.
+  A `.codex/rules/*.md` or `.gemini/global_rules.md` file is never read by those
+  CLIs — Codex's extra context filenames come from the global
+  `project_doc_fallback_filenames` key, not from the repository — so Model Peer
+  does not create them.
+
 ## 0.2.0 - 2026-08-09
 
 ### Added

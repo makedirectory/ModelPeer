@@ -53,14 +53,19 @@ copy of `bin/model-peer` inside a `<<'__MODEL_PEER__'` heredoc. **Any change to
 build otherwise, and `tests/smoke.sh` independently installs and `cmp`s the result.
 This is the single easiest way to break the repo.
 
+`examples/AGENTS.md` is the second copy: it is generated from
+`model-peer rules print`, so any change to the rules text needs `make sync` too.
+`make check-sync` and `tests/smoke.sh` both diff it.
+
 `bin/ask-claude`, `bin/ask-codex`, `bin/ask-gemini`, and `bin/ai-review` are
 four-line compatibility shims that `exec` into `model-peer`; they are also embedded
 in `install.sh`.
 
 ### Command structure
 
-`bin/model-peer` dispatches from `main` into `cmd_ask`, `cmd_review`, or
-`cmd_doctor`. Both consultation paths funnel through `run_provider`, which is the
+`bin/model-peer` dispatches from `main` into `cmd_ask`, `cmd_review`,
+`cmd_rules_install`, `cmd_rules`, or `cmd_doctor`. Both consultation paths funnel
+through `run_provider`, which is the
 single chokepoint that enforces the guards, pushes the chain, and computes the
 depth budget before delegating to `run_claude` / `run_codex` / `run_gemini`. Put
 policy in `run_provider`, not in the per-provider runners — those exist only to
@@ -117,6 +122,34 @@ moving away from that.
 chain is empty, so each reviewer starts fresh; a review launched from inside a peer
 chain inherits that chain and cannot escape the guard. The synthesizer is forced to
 be a leaf by passing it a depth limit of exactly `stack_depth + 1`.
+
+### Repo rules (`init` / `rules`)
+
+`model-peer init` writes the consultation rules into a developer's project. The
+rules text lives in `rules_body` as a quoted heredoc with `@@SPEC@@`, `@@PEER_A@@`,
+and `@@PEER_B@@` placeholders substituted afterwards — quoted so the Markdown
+backticks stay literal, substituted with `#` as the sed delimiter because the peer
+spec contains `|`.
+
+Two invariants:
+
+1. **Only write paths a vendor CLI actually loads.** Claude Code globs
+   `.claude/rules/**/*.md` and reads `CLAUDE.md`; Codex reads `AGENTS.md` and
+   `AGENTS.override.md`; Gemini reads `GEMINI.md`. Codex and Gemini have no
+   per-repo rules directory — `.codex/rules/*.md` and `.gemini/global_rules.md`
+   are inert, since Codex's extra context filenames come from the global
+   `project_doc_fallback_filenames` key. Verify against the shipping CLI before
+   adding a path.
+2. **Never rewrite content outside the markers.** Everything between
+   `<!-- BEGIN MODEL PEER RULES -->` and `<!-- END MODEL PEER RULES -->` is
+   Model Peer's; everything else belongs to the developer. `--force` relinks
+   symlinks and replaces the slash command, and still never touches a regular
+   file's own content.
+
+The profile (`shared`, `claude`, `codex`, `gemini`) is recorded in the managed
+header comment, which is how `rules check` knows what to compare a file against
+without being told the layout. Changing the header format breaks `check` on every
+already-installed repo.
 
 ### Provider safety contracts
 

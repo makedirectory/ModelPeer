@@ -6,6 +6,18 @@ sidebar_position: 3
 
 # Usage
 
+## Set up a project
+
+```bash
+model-peer init
+```
+
+Writes the consultation rules into the repository so your coding agent reaches for
+a peer on its own, and installs the `/peer-review` slash command for Claude Code.
+Re-running is safe: only the managed block is rewritten.
+
+→ [In your workflow](workflow) · [Agent rules](agent-rules)
+
 ## Ask one peer
 
 ```bash
@@ -134,7 +146,13 @@ Nested consultation support
   Gemini   no    cannot scope execution to model-peer alone; always a leaf
 
 Peer-chain depth limit: 1 (max 10)
+
+Project rules in /Users/you/code/your-project
+  AGENTS.md
 ```
+
+If the last section reads `Project rules: none`, the agent in that repository has
+no reason to consult anyone — run [`model-peer init`](workflow).
 
 ## Exit codes
 

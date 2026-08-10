@@ -1,7 +1,7 @@
 ---
 id: reference
 title: CLI reference
-sidebar_position: 7
+sidebar_position: 8
 ---
 
 # CLI reference
@@ -13,6 +13,13 @@ model-peer ask <claude|codex|gemini> [--depth N] "<focused question>"
 command | model-peer ask <claude|codex|gemini> [--depth N]
 
 model-peer review [--models LIST] [--synthesizer MODEL] [--depth N] ["focus"]
+
+model-peer init [--split] [--agents LIST] [--no-command] [--dir DIR]
+                [--dry-run] [--force]
+model-peer rules install [same options as init]
+model-peer rules print [--profile shared|claude|codex|gemini] [--command]
+model-peer rules check [--dir DIR]
+
 model-peer doctor
 model-peer --version
 ```
@@ -44,11 +51,65 @@ synthesize.
 Requires a Git working tree and at least two installed reviewers. The synthesizer
 defaults to the first available of `claude`, `codex`, `gemini`, and is always a leaf.
 
+## `init` / `rules install`
+
+Install the cross-model consultation rules into a project. `model-peer init` is a
+shorthand for `model-peer rules install`. See [In your workflow](workflow).
+
+| Option | Description |
+|---|---|
+| `--split` | One tailored file per CLI instead of a shared `AGENTS.md` with `CLAUDE.md` and `GEMINI.md` symlinked to it |
+| `--agents LIST` | Comma-separated: `claude`, `codex`, `gemini` (default: all three) |
+| `--no-command` | Skip `.claude/commands/peer-review.md` (the `/peer-review` slash command) |
+| `--dir DIR` | Target directory (default: the Git root, else the cwd) |
+| `--dry-run` | Report what would change; write nothing |
+| `--force` | Overwrite files Model Peer owns outright — the slash command, and a `CLAUDE.md`/`GEMINI.md` symlink pointing elsewhere |
+| `-h`, `--help` | Usage |
+
+Files written, by layout:
+
+| | Default | `--split` |
+|---|---|---|
+| Claude Code | `CLAUDE.md` → `AGENTS.md` | `.claude/rules/cross-model-consultation.md` |
+| Codex CLI | `AGENTS.md` | `AGENTS.md` |
+| Gemini CLI | `GEMINI.md` → `AGENTS.md` | `GEMINI.md` |
+| Slash command | `.claude/commands/peer-review.md` | `.claude/commands/peer-review.md` |
+
+Content lives between `<!-- BEGIN MODEL PEER RULES -->` and
+`<!-- END MODEL PEER RULES -->`. Everything outside those markers is never
+rewritten, so re-running is safe and idempotent. `--force` never destroys a regular
+file's contents; it only relinks symlinks and replaces the slash command.
+
+`init` writes only paths the vendor CLIs actually load. There is no per-repository
+rules directory for Codex or Gemini, so it never creates `.codex/` or `.gemini/`.
+
+## `rules print`
+
+Write the rules to stdout without touching any file.
+
+| Option | Description |
+|---|---|
+| `--profile P` | `shared` (default), `claude`, `codex`, or `gemini` |
+| `--command` | Print the `/peer-review` slash command instead |
+
+## `rules check`
+
+Verify that every managed block in the project matches what this version of Model
+Peer would write. The profile is recorded in each block, so both layouts verify
+correctly.
+
+| Option | Description |
+|---|---|
+| `--dir DIR` | Target directory (default: the Git root, else the cwd) |
+
+Exits `0` when everything is current, `1` when a block is missing or stale.
+Suitable for CI.
+
 ## `doctor`
 
 Reports installed CLIs and their paths, authentication availability, safety defaults,
-the per-provider nested-consultation matrix, the effective depth limit, and any
-active chain.
+the per-provider nested-consultation matrix, the effective depth limit, any
+active chain, and whether the current project has rules installed.
 
 ## Compatibility commands
 
@@ -85,7 +146,7 @@ MODEL_PEER_REVIEWERS=codex,gemini model-peer review
 | Code | Meaning |
 |---|---|
 | `0` | Success |
-| `1` | A reviewer or the synthesizer failed |
+| `1` | A reviewer or the synthesizer failed, or `rules check` found missing or stale rules |
 | `2` | Usage or validation error |
 | `64` | Refused by a chain guard — depth limit or self-consultation |
 | `127` | A required command is not installed |

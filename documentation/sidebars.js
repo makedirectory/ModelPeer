@@ -8,7 +8,7 @@ const sidebars = {
       type: 'category',
       label: 'Getting started',
       collapsed: false,
-      items: ['install', 'usage', 'agent-rules'],
+      items: ['install', 'usage', 'workflow', 'agent-rules'],
     },
     {
       type: 'category',
