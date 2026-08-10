@@ -34,6 +34,12 @@ EOF
 cat > "$TMP/bin/gemini" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+# model-peer feature-detects --skip-trust from --help before invoking Gemini.
+# Answer that without logging, so the probe does not pollute call assertions.
+if [[ "$*" == *--help* ]]; then
+  printf '      --skip-trust                Trust the current workspace for this session.\n'
+  exit 0
+fi
 printf 'GEMINI ARGS:' >> "$MODEL_PEER_TEST_LOG"
 printf ' <%s>' "$@" >> "$MODEL_PEER_TEST_LOG"
 # Capture the generated policy; model-peer deletes it as soon as we exit.
@@ -196,6 +202,138 @@ fi
 if MODEL_PEER_STACK='claude:codex' model-peer review --models claude,codex 'nested' >/dev/null 2>&1; then
   echo 'expected nested review to be blocked by the depth guard' >&2; exit 1
 fi
+
+# Gemini's folder-trust gate makes a headless run a silent no-op in an untrusted
+# directory, so the workspace is trusted for the session. The stub advertises the
+# flag in --help, which is how model-peer feature-detects it.
+: > "$LOG"
+model-peer ask gemini 'trust' >/dev/null
+grep -Fq '<--skip-trust>' "$LOG"
+
+# Timeouts. A hung peer must be bounded, must not leave orphans holding the pipe
+# open, and must exit 124.
+cat > "$TMP/bin/hang" <<'EOF'
+#!/usr/bin/env bash
+sleep 120
+EOF
+chmod +x "$TMP/bin/hang"
+cat > "$TMP/bin/codex-hang" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == login && "${2:-}" == status ]]; then exit 0; fi
+hang
+EOF
+chmod +x "$TMP/bin/codex-hang"
+
+HANG_START="$(date +%s)"
+cp "$TMP/bin/codex" "$TMP/bin/codex.real"
+cp "$TMP/bin/codex-hang" "$TMP/bin/codex"
+if model-peer ask codex --timeout 3 'this will hang' >/dev/null 2>"$TMP/hang.err"; then
+  echo 'expected a hung peer to fail' >&2; exit 1
+else
+  [[ $? -eq 124 ]]
+fi
+HANG_ELAPSED=$(( $(date +%s) - HANG_START ))
+# Bounded near the limit rather than running to the stub's 120s sleep.
+(( HANG_ELAPSED < 30 )) || { echo "timeout did not bound the run ($HANG_ELAPSED s)" >&2; exit 1; }
+grep -Fq 'exceeded the 3s timeout' "$TMP/hang.err"
+# The whole process group is signalled, so no grandchild survives holding stdout.
+if pgrep -f 'sleep 120' >/dev/null 2>&1; then
+  echo 'timeout left an orphaned grandchild behind' >&2; exit 1
+fi
+
+# --timeout 0 disables the limit, and a bad value is a usage error.
+cp "$TMP/bin/codex.real" "$TMP/bin/codex"
+model-peer ask codex --timeout 0 'no limit' >/dev/null
+model-peer ask codex --timeout=30 'explicit' >/dev/null
+MODEL_PEER_TIMEOUT=45 model-peer ask codex 'env timeout' >/dev/null
+for bad in abc -1 1.5; do
+  if model-peer ask codex --timeout "$bad" 'x' >/dev/null 2>&1; then
+    echo "expected --timeout $bad to be rejected" >&2; exit 1
+  else
+    [[ $? -eq 2 ]]
+  fi
+done
+
+cd "$TMP/repo"
+
+# A reviewer that hangs is dropped, and synthesis still runs on the survivors.
+cp "$TMP/bin/codex-hang" "$TMP/bin/codex"
+model-peer review --models claude,codex,gemini --synthesizer claude --timeout 3 \
+  'partial panel' >/dev/null 2>"$TMP/partial.err"
+grep -Fq 'dropping it from the panel' "$TMP/partial.err"
+grep -Fq 'synthesizing from 2 of 3 reviewers' "$TMP/partial.err"
+
+# --strict restores refuse-on-any-failure.
+if model-peer review --models claude,codex,gemini --synthesizer claude --timeout 3 \
+    --strict 'strict panel' >/dev/null 2>&1; then
+  echo 'expected --strict to refuse an incomplete panel' >&2; exit 1
+else
+  [[ $? -eq 1 ]]
+fi
+
+# Fewer than two survivors is not a cross-model review, so it is refused.
+if model-peer review --models codex,gemini --synthesizer claude --timeout 3 \
+    'one survivor' >/dev/null 2>"$TMP/onesurvivor.err"; then
+  echo 'expected a one-reviewer panel to be refused' >&2; exit 1
+else
+  [[ $? -eq 1 ]]
+fi
+grep -Fq 'refusing to synthesize a panel of fewer than two' "$TMP/onesurvivor.err"
+cp "$TMP/bin/codex.real" "$TMP/bin/codex"
+
+# A reviewer that exits 0 with no output has not reviewed anything; an empty file
+# must not reach the synthesizer as "this model found no issues".
+cat > "$TMP/bin/gemini.silent" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$*" == *--help* ]]; then printf '      --skip-trust  Trust the workspace\n'; exit 0; fi
+exit 0
+EOF
+chmod +x "$TMP/bin/gemini.silent"
+cp "$TMP/bin/gemini" "$TMP/bin/gemini.real"
+cp "$TMP/bin/gemini.silent" "$TMP/bin/gemini"
+model-peer review --models claude,codex,gemini --synthesizer claude \
+  'silent reviewer' >/dev/null 2>"$TMP/silent.err"
+grep -Fq 'produced no output; dropping it from the panel' "$TMP/silent.err"
+cp "$TMP/bin/gemini.real" "$TMP/bin/gemini"
+
+# The synthesizer is told which reviewers are missing, so a partial panel cannot
+# be reported as a complete one.
+: > "$LOG"
+cp "$TMP/bin/codex-hang" "$TMP/bin/codex"
+model-peer review --models claude,codex,gemini --synthesizer claude --timeout 3 \
+  'coverage note' >/dev/null 2>&1
+grep -Fq 'Panel coverage:' "$LOG"
+grep -Fq 'did NOT complete and contributed nothing' "$LOG"
+grep -Fq 'not evidence of safety' "$LOG"
+cp "$TMP/bin/codex.real" "$TMP/bin/codex"
+
+# A complete panel says so, and says nothing about gaps.
+: > "$LOG"
+model-peer review --models claude,codex --synthesizer claude 'full panel' >/dev/null 2>&1
+grep -Fq 'Every reviewer in the panel completed.' "$LOG"
+
+# Untracked files must reach reviewers. `git diff HEAD` cannot see them, and
+# `git status --short` collapses a whole new directory to one "?? src/" line, so
+# a new package would otherwise be reviewed as a path with no contents.
+mkdir -p "$TMP/repo/src/newpkg"
+printf 'def handler(x):\n    return eval(x)\n' > "$TMP/repo/src/newpkg/handler.py"
+printf '\x00\x01binary\x00' > "$TMP/repo/src/newpkg/blob.bin"
+printf 'ignored\n' > "$TMP/repo/skipme.log"
+printf '*.log\n' > "$TMP/repo/.gitignore"
+: > "$LOG"
+model-peer review --models claude,codex --synthesizer claude 'untracked' >/dev/null 2>&1
+grep -Fq 'includes_untracked="true"' "$LOG"
+grep -Fq 'src/newpkg/handler.py' "$LOG"
+grep -Fq 'return eval(x)' "$LOG"
+# Binaries are summarized, not dumped into the prompt.
+grep -Fq 'Binary files /dev/null and b/src/newpkg/blob.bin differ' "$LOG"
+# Ignored files stay out.
+if grep -Fq 'skipme.log' "$LOG"; then
+  echo 'expected gitignored files to stay out of the review context' >&2; exit 1
+fi
+rm -rf "$TMP/repo/src" "$TMP/repo/skipme.log" "$TMP/repo/.gitignore"
+
+cd "$ROOT"
 
 # Repo rules installation. `init` must be safe to re-run, must never rewrite
 # content outside its managed block, and must only write paths the vendor CLIs

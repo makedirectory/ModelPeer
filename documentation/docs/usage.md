@@ -69,6 +69,9 @@ model-peer review
 Every reviewer receives the same Git status and patch and works independently. Only
 after all reviews complete does a synthesizer reconcile them.
 
+The patch covers **untracked files as well as tracked changes**, so a package you
+just created is reviewed rather than merely listed as a path.
+
 Add a focus:
 
 ```bash
@@ -94,6 +97,30 @@ model-peer review --synthesizer codex
 
 Claude is preferred for synthesis when installed, then Codex, then Gemini. The
 synthesizer is always a leaf: it never consults a peer, regardless of `--depth`.
+
+### When a reviewer stalls
+
+Each reviewer is bounded independently — 600 seconds by default — and reports
+progress on stderr every 30 seconds:
+
+```bash
+model-peer review --timeout 300
+model-peer review --timeout 0      # no bound
+```
+
+A reviewer that times out, fails, or returns nothing at all is dropped from the
+panel and named. Synthesis proceeds while at least two reviewers produced a real
+review, and the synthesizer is told which are missing so a partial panel is never
+reported as a complete one:
+
+```text
+model-peer: Codex timed out after 300s; dropping it from the panel.
+model-peer: synthesizing from 2 of 3 reviewers; the report will name the gaps.
+```
+
+`--strict` refuses to synthesize unless every reviewer completed.
+
+→ [Troubleshooting](troubleshooting)
 
 The old command remains available:
 
@@ -137,6 +164,7 @@ Safety defaults
   Claude  plan mode; Read/Glob/Grep only; stdin closed
   Codex   read-only sandbox; ephemeral session; stdin closed
   Gemini  plan mode + deny policy; extensions disabled; stdin closed
+  Gemini  workspace trusted for the session so headless runs are not silent no-ops
   All     chain guard via MODEL_PEER_STACK; no model consults itself
   All     peers never write, and never gain a general shell
 
@@ -144,6 +172,8 @@ Nested consultation support
   Claude   yes   execution scoped to the model-peer command namespace
   Codex    yes   read-only sandbox already permits it; nothing added
   Gemini   no    cannot scope execution to model-peer alone; always a leaf
+
+Consultation timeout:   600s per peer
 
 Peer-chain depth limit: 1 (max 10)
 
@@ -159,9 +189,10 @@ no reason to consult anyone — run [`model-peer init`](workflow).
 | Code | Meaning |
 |---|---|
 | `0` | success |
-| `1` | a reviewer or the synthesizer failed |
+| `1` | too few reviewers completed, or the synthesizer failed |
 | `2` | usage or validation error |
 | `64` | refused by a chain guard (depth limit or self-consultation) |
+| `124` | a consultation exceeded its timeout |
 | `127` | a required command is not installed |
 
 Progress and diagnostics go to stderr; only model output goes to stdout, so

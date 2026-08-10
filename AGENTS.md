@@ -27,6 +27,13 @@ The docs site lives in `documentation/` (Docusaurus, deployed to GitHub Pages by
 `.github/workflows/docs.yml`). It is the only part of the repo with Node
 dependencies; the tool itself stays dependency-free.
 
+It is served from the custom domain **https://modelpeer.app**, which depends on
+three things staying in agreement: `documentation/static/CNAME` (Docusaurus copies
+it verbatim into the build, and GitHub Pages reads it), and `url` / `baseUrl` in
+`docusaurus.config.js`. Reverting `baseUrl` to `/ModelPeer/` breaks every asset
+path on the live site. Link to docs pages from the README as
+`https://modelpeer.app/<page>`, never as a `github.io` URL.
+
 ```bash
 cd documentation && npm install && npm run build   # build fails on broken links
 ```
@@ -150,6 +157,37 @@ The profile (`shared`, `claude`, `codex`, `gemini`) is recorded in the managed
 header comment, which is how `rules check` knows what to compare a file against
 without being told the layout. Changing the header format breaks `check` on every
 already-installed repo.
+
+### Orchestration robustness
+
+A peer that never answers is the failure mode that costs the most, because it
+costs a whole review. Three rules hold here:
+
+1. **Every consultation is bounded.** `run_with_limit` polls rather than shelling
+   out to `timeout(1)`, which macOS does not ship. On expiry it signals the
+   **process group** — `set -m` puts the child in its own group first. Signalling
+   only the direct child leaves vendor helper processes holding the inherited
+   stdout, so the downstream `tee` never sees EOF and the hang outlives the kill.
+   This is easy to reintroduce; the smoke test asserts no orphan survives.
+2. **Silence is failure, not consent.** A reviewer that exits `0` with zero bytes
+   has reviewed nothing. Gemini's folder-trust gate failed exactly this way, and
+   an empty file reaching the synthesizer reads as "this model found no issues" —
+   the most dangerous possible misreport.
+3. **A partial panel must say it is partial.** One reviewer failing drops that
+   reviewer, not the run, but `synthesis_prompt` receives the dropped list and is
+   told a gap in coverage is not evidence of safety. Synthesis below two surviving
+   reviewers is refused outright: a one-model panel is not a cross-model review.
+
+### Review context
+
+`make_review_context` must show reviewers the code under review, which is not what
+`git diff` alone provides. Untracked files are invisible to `git diff` at any
+revision, and `git status --short` collapses a new directory to one `?? src/` entry,
+so a whole new package can arrive as a single path. Context therefore uses
+`--untracked-files=all` and synthesizes an add-diff per untracked file with
+`git diff --no-index -- /dev/null <path>`. Keep `--exclude-standard` so ignored
+files stay out, and never use `git add -N` to make untracked files diffable — that
+mutates the developer's index, and a review command must not.
 
 ### Provider safety contracts
 

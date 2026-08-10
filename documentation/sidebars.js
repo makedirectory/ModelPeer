@@ -20,7 +20,7 @@ const sidebars = {
       type: 'category',
       label: 'Reference',
       collapsed: false,
-      items: ['reference', 'development'],
+      items: ['reference', 'troubleshooting', 'development'],
     },
     'roadmap',
   ],

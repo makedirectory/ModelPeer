@@ -1,7 +1,7 @@
 # Model Peer
 
 [![test](https://github.com/makedirectory/ModelPeer/actions/workflows/test.yml/badge.svg)](https://github.com/makedirectory/ModelPeer/actions/workflows/test.yml)
-[![docs](https://github.com/makedirectory/ModelPeer/actions/workflows/docs.yml/badge.svg)](https://makedirectory.github.io/ModelPeer/)
+[![docs](https://github.com/makedirectory/ModelPeer/actions/workflows/docs.yml/badge.svg)](https://modelpeer.app)
 [![release](https://img.shields.io/github/v/release/makedirectory/ModelPeer)](https://github.com/makedirectory/ModelPeer/releases)
 [![license](https://img.shields.io/github/license/makedirectory/ModelPeer)](LICENSE)
 
@@ -10,7 +10,7 @@
 Model Peer lets Claude Code, OpenAI Codex CLI, and Google Gemini CLI consult one
 another as independent, read-only engineering peers.
 
-📖 **[Documentation](https://makedirectory.github.io/ModelPeer/)**
+📖 **[Documentation](https://modelpeer.app)**
 
 ```bash
 model-peer ask codex "Review this authentication design for bypasses"
@@ -62,7 +62,7 @@ Or clone and run `./install.sh`. As with any remote shell installer, inspect it
 first. Model Peer never asks you to paste an API key — authentication stays with
 each vendor CLI.
 
-→ [Full install guide](https://makedirectory.github.io/ModelPeer/install)
+→ [Full install guide](https://modelpeer.app/install)
 
 ## Set up a project
 
@@ -90,8 +90,8 @@ Commit those files and your team gets the same behavior. Re-running only rewrite
 the block between its own markers, so your existing rules are safe. Prefer one
 tailored file per CLI? `model-peer init --split`.
 
-→ [In your workflow](https://makedirectory.github.io/ModelPeer/workflow) ·
-[Agent rules](https://makedirectory.github.io/ModelPeer/agent-rules)
+→ [In your workflow](https://modelpeer.app/workflow) ·
+[Agent rules](https://modelpeer.app/agent-rules)
 
 ## Commands
 
@@ -103,8 +103,12 @@ model-peer rules <install|print|check>                      # manage those rules
 model-peer doctor                                           # check setup
 ```
 
-→ [Usage](https://makedirectory.github.io/ModelPeer/usage) ·
-[CLI reference](https://makedirectory.github.io/ModelPeer/reference)
+Every consultation is bounded (`--timeout`, 600s default) and reports progress on
+stderr. A reviewer that hangs, fails, or returns nothing is dropped and named rather
+than taking the whole panel with it.
+
+→ [Usage](https://modelpeer.app/usage) ·
+[CLI reference](https://modelpeer.app/reference)
 
 ## Safety
 
@@ -116,10 +120,14 @@ Consultation chains are bounded by `--depth` (default 1, ceiling 10), and no mod
 is ever consulted by itself. Depth is a **limit, not a permission** — raising it
 increases how many models can participate, never what a model can do to your system.
 
+Reviews cover untracked files as well as tracked changes, so new code is reviewed
+rather than merely listed.
+
 This is defense in depth, not a formal sandbox. Upstream CLI behavior can change.
 
-→ [Safety boundaries](https://makedirectory.github.io/ModelPeer/safety) ·
-[Peer-chain depth](https://makedirectory.github.io/ModelPeer/depth)
+→ [Safety boundaries](https://modelpeer.app/safety) ·
+[Peer-chain depth](https://modelpeer.app/depth) ·
+[Troubleshooting](https://modelpeer.app/troubleshooting)
 
 ## Development
 
@@ -129,8 +137,8 @@ make lint     # syntax check, plus shellcheck when installed
 make sync     # regenerate install.sh's embedded copy of bin/model-peer
 ```
 
-→ [Development](https://makedirectory.github.io/ModelPeer/development) ·
-[Roadmap](https://makedirectory.github.io/ModelPeer/roadmap)
+→ [Development](https://modelpeer.app/development) ·
+[Roadmap](https://modelpeer.app/roadmap)
 
 ## Community
 
