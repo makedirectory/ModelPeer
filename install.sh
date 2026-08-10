@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="0.2.0"
+VERSION="0.3.0"
 BIN_DIR="${MODEL_PEER_BIN_DIR:-$HOME/.local/bin}"
 DO_SETUP=0
 INSTALL_DEPS=0
@@ -9,7 +9,7 @@ DO_LOGIN=0
 
 usage() {
   cat <<'USAGE'
-Model Peer installer v0.2.0
+Model Peer installer v0.3.0
 
 Usage:
   ./install.sh [options]
@@ -83,12 +83,12 @@ write_commands() {
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="0.2.0"
+VERSION="0.3.0"
 PROGRAM="model-peer"
 
 usage() {
   cat <<'USAGE'
-Model Peer v0.2.0 — cross-model peer review for coding agents.
+Model Peer v0.3.0 — cross-model peer review for coding agents.
 
 Usage:
   model-peer ask claude "<focused question>"
@@ -97,17 +97,33 @@ Usage:
   command | model-peer ask <claude|codex|gemini>
 
   model-peer review [options] ["focus instructions"]
+
+  model-peer init [options]            Install the consultation rules in a repo
+  model-peer rules <install|print|check>
   model-peer doctor
   model-peer --version
 
 Ask options:
   --depth N              Max peer-chain length, 1-10 (default: 1)
+  --timeout S            Give up on the peer after S seconds (default: 600,
+                         0 disables). Exits 124 on timeout.
 
 Review options:
   --models LIST          Comma-separated reviewers (default: all installed)
   --synthesizer MODEL    claude, codex, or gemini (default: first available in
                          claude,codex,gemini order)
   --depth N              Max peer-chain length for each reviewer, 1-10 (default: 1)
+  --timeout S            Per-reviewer timeout in seconds (default: 600, 0 off).
+                         A reviewer that times out, fails, or returns nothing is
+                         dropped and named; synthesis needs two survivors.
+  --strict               Refuse to synthesize unless every reviewer completed
+
+Init options:
+  --split                One tailored rules file per CLI instead of a shared
+                         AGENTS.md with CLAUDE.md and GEMINI.md symlinked to it
+  --agents LIST          Comma-separated: claude, codex, gemini (default: all)
+  --no-command           Skip the Claude Code /peer-review slash command
+  --dry-run              Report what would change; write nothing
 
 Peer-chain depth:
   Depth is a limit, never a permission. Depth 1 (default) means a peer answers on
@@ -123,6 +139,7 @@ Environment:
   MODEL_PEER_REVIEWERS        Default comma-separated review model list
   MODEL_PEER_SYNTHESIZER      Default synthesis model
   MODEL_PEER_MAX_DEPTH        Default peer-chain depth limit, 1-10 (1)
+  MODEL_PEER_TIMEOUT          Default per-consultation timeout in seconds (600)
   MODEL_PEER_MAX_DIFF_BYTES   Max patch bytes embedded in review prompt (500000)
   MODEL_PEER_STACK            Managed by Model Peer; the active peer chain
 
@@ -243,6 +260,83 @@ check_chain() {
   return 0
 }
 
+DEFAULT_TIMEOUT=600
+TIMEOUT_EXIT=124
+HEARTBEAT_SECONDS=30
+
+# Resolve the per-consultation timeout from --timeout, then MODEL_PEER_TIMEOUT,
+# then the default. 0 disables it.
+resolve_timeout() {
+  local requested="$1"
+  local secs="${requested:-${MODEL_PEER_TIMEOUT:-$DEFAULT_TIMEOUT}}"
+  [[ "$secs" =~ ^[0-9]+$ ]] || {
+    err "timeout must be a non-negative integer number of seconds (got '$secs')."
+    return 2
+  }
+  printf '%s' "$secs"
+}
+
+# Run a command under a wall-clock limit, reporting progress on stderr so a
+# multi-minute consultation is not indistinguishable from a hung one.
+#
+# macOS ships no coreutils `timeout`, so this polls instead. The child is asked to
+# stop with TERM and killed with KILL if it ignores that. Returns 124 on timeout,
+# matching the convention `timeout(1)` uses.
+run_with_limit() {
+  local label="$1" secs="$2"
+  shift 2
+
+  if (( secs <= 0 )); then
+    "$@"
+    return
+  fi
+
+  # Job control puts the child in its own process group, so the whole tree can be
+  # signalled by negating the pid. Signalling only the direct child is not enough:
+  # a vendor CLI that spawns helpers leaves them holding the inherited stdout, and
+  # the pipeline downstream never sees EOF — the hang survives the kill.
+  set -m
+  "$@" &
+  local pid=$!
+  set +m
+
+  local waited=0 status=0
+  while kill -0 "$pid" 2>/dev/null; do
+    if (( waited >= secs )); then
+      err "$label exceeded the ${secs}s timeout; stopping it."
+      kill_tree "$pid"
+      return "$TIMEOUT_EXIT"
+    fi
+    sleep 1
+    waited=$(( waited + 1 ))
+    if (( waited % HEARTBEAT_SECONDS == 0 )); then
+      note "$label still working (${waited}s of ${secs}s)."
+    fi
+  done
+
+  if wait "$pid" 2>/dev/null; then
+    status=0
+  else
+    status=$?
+  fi
+  return "$status"
+}
+
+# TERM the process group, give it a few seconds, then KILL. Reaping happens with
+# stderr redirected because the shell announces a signalled job on its own.
+kill_tree() {
+  local pid="$1" grace=0
+  {
+    kill -TERM "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+    while (( grace < 5 )) && kill -0 "$pid" 2>/dev/null; do
+      sleep 1
+      grace=$(( grace + 1 ))
+    done
+    kill -KILL "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
+    wait "$pid" || true
+  } 2>/dev/null
+}
+
 read_prompt() {
   if (( $# > 0 )); then
     printf '%s' "$*"
@@ -354,6 +448,20 @@ run_codex() {
       </dev/null
 }
 
+# Cached: --help costs a process spawn but no model call, and the answer cannot
+# change within one run.
+GEMINI_SKIP_TRUST_SUPPORT=''
+gemini_supports_skip_trust() {
+  if [[ -z "$GEMINI_SKIP_TRUST_SUPPORT" ]]; then
+    if gemini --help 2>/dev/null | grep -Fq -- '--skip-trust'; then
+      GEMINI_SKIP_TRUST_SUPPORT=yes
+    else
+      GEMINI_SKIP_TRUST_SUPPORT=no
+    fi
+  fi
+  [[ "$GEMINI_SKIP_TRUST_SUPPORT" == yes ]]
+}
+
 run_gemini() {
   local prompt="$1" stack="$2" remaining="$3" max_depth="$4" delegation="$5"
   provider_installed gemini || {
@@ -398,11 +506,24 @@ decision = "deny"
 priority = 999
 POLICY
 
+  # Gemini refuses to act in a directory its folder-trust gate has not blessed,
+  # and headlessly that is a silent no-op: it exits 0 having produced nothing,
+  # which a review panel would otherwise treat as "this reviewer found nothing".
+  # --skip-trust trusts the workspace for this one session. It is safe here
+  # precisely because the deny policy above is passed explicitly and extensions
+  # are off, so the tighter grant does not depend on the trust gate. Older Gemini
+  # builds lack the flag, so only pass it when this one advertises it.
+  local -a trust_args=()
+  if gemini_supports_skip_trust; then
+    trust_args=(--skip-trust)
+  fi
+
   if MODEL_PEER_STACK="$stack" MODEL_PEER_MAX_DEPTH="$max_depth" \
       gemini \
         --approval-mode plan \
         --policy "$policy" \
         -e none \
+        ${trust_args[@]+"${trust_args[@]}"} \
         -p "$bridge_prompt" \
         </dev/null; then
     status=0
@@ -417,7 +538,7 @@ POLICY
 # run_provider owns the chain: it validates the guards, pushes the provider, and
 # computes how much depth is left for the peer it is about to spawn.
 run_provider() {
-  local provider="$1" max_depth="$2" prompt="$3"
+  local provider="$1" max_depth="$2" prompt="$3" timeout="${4:-0}"
   require_nonempty_prompt "$prompt" || return
 
   case "$provider" in
@@ -427,27 +548,36 @@ run_provider() {
 
   check_chain "$provider" "$max_depth" || return 64
 
-  local stack remaining delegation
+  local stack remaining delegation label
   stack="$(push_stack "$provider")"
   remaining=$(( max_depth - $(stack_depth) - 1 ))
   delegation="$(resolve_delegation "$provider" "$remaining")"
+  label="$(provider_label "$provider")"
 
   # A depth budget the provider cannot safely hold is reported, never silently
   # converted into a wider sandbox.
   if (( remaining > 0 )) && [[ "$delegation" == 'none' ]]; then
-    note "$(provider_label "$provider") cannot initiate nested consultation; answering as a leaf."
+    note "$label cannot initiate nested consultation; answering as a leaf."
     note "Reason: its policy engine cannot scope execution to model-peer alone. See README."
   fi
 
-  case "$provider" in
-    claude) run_claude "$prompt" "$stack" "$remaining" "$max_depth" "$delegation" ;;
-    codex)  run_codex  "$prompt" "$stack" "$remaining" "$max_depth" "$delegation" ;;
-    gemini) run_gemini "$prompt" "$stack" "$remaining" "$max_depth" "$delegation" ;;
-  esac
+  local status=0
+  if run_with_limit "$label" "$timeout" \
+      "run_$provider" "$prompt" "$stack" "$remaining" "$max_depth" "$delegation"; then
+    status=0
+  else
+    status=$?
+  fi
+
+  if (( status == TIMEOUT_EXIT )); then
+    err "$label produced no answer within ${timeout}s."
+    err 'Raise or disable the limit with --timeout N (0 disables it).'
+  fi
+  return "$status"
 }
 
 cmd_ask() {
-  local provider='' depth_arg=''
+  local provider='' depth_arg='' timeout_arg=''
   local -a rest=()
 
   while (( $# > 0 )); do
@@ -457,17 +587,25 @@ cmd_ask() {
         depth_arg="$1"
         ;;
       --depth=*) depth_arg="${1#--depth=}" ;;
+      --timeout)
+        shift; (( $# > 0 )) || { err '--timeout requires a value.'; return 2; }
+        timeout_arg="$1"
+        ;;
+      --timeout=*) timeout_arg="${1#--timeout=}" ;;
       -h|--help)
         cat <<'USAGE'
 Usage:
-  model-peer ask <claude|codex|gemini> [--depth N] "<focused question>"
-  command | model-peer ask <claude|codex|gemini> [--depth N]
+  model-peer ask <claude|codex|gemini> [--depth N] [--timeout S] "<question>"
+  command | model-peer ask <claude|codex|gemini> [--depth N] [--timeout S]
 
-  --depth N   Max peer-chain length, 1-10 (default: 1). Depth 1 means the peer
-              answers alone. Above 1, the peer may consult a further model where
-              its provider can scope that execution to model-peer alone; peers
-              whose sandbox cannot express that stay leaves. Use -- to end
-              options when the prompt itself starts with a dash.
+  --depth N     Max peer-chain length, 1-10 (default: 1). Depth 1 means the peer
+                answers alone. Above 1, the peer may consult a further model where
+                its provider can scope that execution to model-peer alone; peers
+                whose sandbox cannot express that stay leaves. Use -- to end
+                options when the prompt itself starts with a dash.
+  --timeout S   Give up on the peer after S seconds (default: 600, 0 disables).
+                Progress is reported on stderr every 30s so a slow consultation
+                is distinguishable from a hung one. Exits 124 on timeout.
 USAGE
         return 0
         ;;
@@ -482,15 +620,16 @@ USAGE
 
   [[ -n "$provider" ]] || { err 'ask requires a model: claude, codex, or gemini.'; return 2; }
 
-  local max_depth
+  local max_depth timeout
   max_depth="$(resolve_max_depth "$depth_arg")" || return 2
+  timeout="$(resolve_timeout "$timeout_arg")" || return 2
 
   local prompt
   if ! prompt="$(read_prompt ${rest[@]+"${rest[@]}"})"; then
     err 'ask requires a prompt argument or piped stdin.'
     return 2
   fi
-  run_provider "$provider" "$max_depth" "$prompt"
+  run_provider "$provider" "$max_depth" "$prompt" "$timeout"
 }
 
 installed_reviewers() {
@@ -510,23 +649,42 @@ split_models() {
 
 make_review_context() {
   local root="$1" output="$2" max_bytes="$3"
-  local status_file patch_file patch_bytes
+  local status_file patch_file untracked_file patch_bytes
   status_file="${output}.status"
   patch_file="${output}.patch"
+  untracked_file="${output}.untracked"
 
-  git status --short --branch > "$status_file"
+  # -uall matters: `git status --short` collapses a new directory to a single
+  # "?? src/" line, so an entire new package can reach a reviewer as one entry
+  # with no filenames at all.
+  git status --short --branch --untracked-files=all > "$status_file"
   if git rev-parse --verify HEAD >/dev/null 2>&1; then
     git diff --no-ext-diff --no-color HEAD -- > "$patch_file"
   else
     git diff --no-ext-diff --no-color -- > "$patch_file"
   fi
 
+  # Untracked files are invisible to `git diff` at any revision, so new code —
+  # usually the code most in need of review — would otherwise be described only
+  # by its path. Synthesize an add-diff for each one against /dev/null. Ignored
+  # files stay out via --exclude-standard, and git renders binaries as a one-line
+  # "Binary files differ" rather than dumping bytes into the prompt.
+  : > "$untracked_file"
+  git ls-files --others --exclude-standard -z |
+    while IFS= read -r -d '' path; do
+      git diff --no-ext-diff --no-color --no-index -- /dev/null "$path" || true
+    done >> "$untracked_file"
+  if [[ -s "$untracked_file" ]]; then
+    cat "$untracked_file" >> "$patch_file"
+  fi
+  rm -f "$untracked_file"
+
   patch_bytes="$(wc -c < "$patch_file" | tr -d ' ')"
   {
     printf '<git_status>\n'
     cat "$status_file"
     printf '</git_status>\n\n'
-    printf '<git_patch bytes="%s" max_embedded_bytes="%s">\n' "$patch_bytes" "$max_bytes"
+    printf '<git_patch bytes="%s" max_embedded_bytes="%s" includes_untracked="true">\n' "$patch_bytes" "$max_bytes"
     if (( patch_bytes > max_bytes )); then
       head -c "$max_bytes" "$patch_file"
       printf '\n\n[Model Peer truncated the patch after %s bytes. Inspect listed files read-only for additional context.]\n' "$max_bytes"
@@ -548,9 +706,11 @@ Other models receive the same starting evidence; you do not see their conclusion
 Review focus:
 $focus
 
-Review the current Git working tree. The status and patch are included below.
-You may inspect relevant workspace files using read-only capabilities when useful,
-especially untracked files or surrounding code not fully represented in the patch.
+Review the current Git working tree. The status and patch are included below. The
+patch covers tracked changes and new untracked files alike, so a file added in this
+change appears as an add-diff rather than only as a path. You may inspect relevant
+workspace files using read-only capabilities when useful, especially surrounding
+code not represented in the patch.
 Do not modify files and do not consult any other model.
 
 Report only actionable findings. For each finding include:
@@ -570,7 +730,16 @@ PROMPT
 }
 
 synthesis_prompt() {
-  local focus="$1" reviews_dir="$2"
+  local focus="$1" reviews_dir="$2" dropped="${3:-}"
+  local coverage='Every reviewer in the panel completed.'
+  if [[ -n "${dropped//[[:space:]]/}" ]]; then
+    coverage="These reviewers did NOT complete and contributed nothing:
+
+$dropped
+Their absence is a gap in coverage, not evidence of safety. Say so plainly in the
+report, and do not describe the review as complete."
+  fi
+
   cat <<PROMPT
 You are the synthesis editor for an independent cross-model engineering review.
 Do not inspect the repository, use tools, or consult another model. Reconcile the
@@ -579,13 +748,17 @@ reviewers' evidence; do not accept a claim merely because multiple models repeat
 Review focus:
 $focus
 
+Panel coverage:
+$coverage
+
 Produce a decisive final report with:
 1. Final prioritized findings, deduplicated
 2. Which reviewer(s) raised each finding
 3. Confidence: high, medium, or low
 4. Recommended next action
 5. Disagreements or likely false positives worth noting
-6. A short "Looks good" conclusion if nothing material remains
+6. Any gap in panel coverage, stated explicitly
+7. A short "Looks good" conclusion if nothing material remains
 
 <claude_review>
 $(cat "$reviews_dir/claude.txt" 2>/dev/null || printf '[not run]')
@@ -605,6 +778,8 @@ cmd_review() {
   local reviewers="${MODEL_PEER_REVIEWERS:-}"
   local synthesizer="${MODEL_PEER_SYNTHESIZER:-}"
   local depth_arg=''
+  local timeout_arg=''
+  local strict=0
   local focus=''
 
   while (( $# > 0 )); do
@@ -622,11 +797,17 @@ cmd_review() {
         depth_arg="$1"
         ;;
       --depth=*) depth_arg="${1#--depth=}" ;;
+      --timeout)
+        shift; (( $# > 0 )) || { err '--timeout requires a value.'; return 2; }
+        timeout_arg="$1"
+        ;;
+      --timeout=*) timeout_arg="${1#--timeout=}" ;;
+      --strict) strict=1 ;;
       -h|--help)
         cat <<'USAGE'
 Usage:
   model-peer review [--models claude,codex,gemini] [--synthesizer MODEL]
-                    [--depth N] ["focus"]
+                    [--depth N] [--timeout S] [--strict] ["focus"]
 
 By default, every installed supported model reviews independently. At least two
 reviewers are required. Claude is preferred for synthesis when installed, then
@@ -634,6 +815,15 @@ Codex, then Gemini. Set MODEL_PEER_REVIEWERS or MODEL_PEER_SYNTHESIZER to change
 
 --depth N (1-10, default 1) caps the chain length for each reviewer. At depth 1 a
 reviewer works alone. The synthesizer is always a leaf and never consults anyone.
+
+--timeout S (default 600, 0 disables) bounds each reviewer independently, so one
+hung model cannot cost you the whole panel. A reviewer that times out, fails, or
+returns nothing at all is dropped and named in the report; synthesis proceeds as
+long as at least two reviewers produced a real review. --strict restores the old
+behavior of refusing to synthesize unless every reviewer succeeded.
+
+The review covers untracked files as well as tracked changes, so newly added code
+is reviewed rather than merely listed.
 USAGE
         return 0
         ;;
@@ -644,8 +834,9 @@ USAGE
     shift
   done
 
-  local max_depth
+  local max_depth timeout
   max_depth="$(resolve_max_depth "$depth_arg")" || return 2
+  timeout="$(resolve_timeout "$timeout_arg")" || return 2
 
   command -v git >/dev/null 2>&1 || { err "'git' is required for review."; return 127; }
   git rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
@@ -696,30 +887,74 @@ USAGE
 
   printf '\nModel Peer review: %s\n' "$(IFS=,; echo "${valid[*]}")" >&2
   printf 'Reviewers run independently; synthesis: %s\n' "$synthesizer" >&2
+  if (( timeout > 0 )); then
+    printf 'Per-reviewer timeout: %ss\n' "$timeout" >&2
+  else
+    printf 'Per-reviewer timeout: disabled\n' >&2
+  fi
 
+  # Kept as a counter plus a newline-delimited string rather than arrays: Bash 3.2
+  # expands an empty array under `set -u` as an error, and this stays readable.
+  local completed=0 dropped='' reason rc
   for p in "${valid[@]}"; do
     printf '\n=== %s independent review ===\n\n' "$(provider_label "$p")" >&2
     prompt="$(review_prompt "$p" "$focus" "$context")"
     # The inherited chain is preserved deliberately: at top level it is empty, so
     # each reviewer starts fresh, but a review launched from inside a peer chain
     # stays subject to the same depth guard and cannot escape it.
-    if run_provider "$p" "$max_depth" "$prompt" | tee "$tmpdir/$p.txt"; then
-      :
+    #
+    # tee keeps the review streaming to the terminal as it arrives while also
+    # capturing it for synthesis; PIPESTATUS[0] is the reviewer's own status,
+    # read inside the `if` so `set -e` cannot abort first.
+    if run_provider "$p" "$max_depth" "$prompt" "$timeout" | tee "$tmpdir/$p.txt"; then
+      rc=0
     else
-      err "$p review failed."
+      rc="${PIPESTATUS[0]}"
+    fi
+
+    reason=''
+    if (( rc == TIMEOUT_EXIT )); then
+      reason="timed out after ${timeout}s"
+    elif (( rc != 0 )); then
+      reason="failed with exit $rc"
+    elif [[ ! -s "$tmpdir/$p.txt" ]]; then
+      # A reviewer that exits 0 having written nothing has not reviewed anything.
+      # Gemini's folder-trust gate failed exactly this way, and an empty file
+      # would otherwise reach the synthesizer as "this model found no issues".
+      reason='produced no output'
+    fi
+
+    if [[ -n "$reason" ]]; then
+      err "$(provider_label "$p") $reason; dropping it from the panel."
+      printf '[reviewer %s and was dropped from the panel]\n' "$reason" > "$tmpdir/$p.txt"
+      dropped="${dropped}$(provider_label "$p") — $reason
+"
       failed=1
-      printf '[review failed]\n' > "$tmpdir/$p.txt"
+    else
+      completed=$(( completed + 1 ))
     fi
   done
 
-  (( failed == 0 )) || {
-    err 'one or more reviewers failed; refusing to synthesize an incomplete panel.'
+  # A cross-model review needs at least two independent views to be worth the
+  # name. Below that the result is one opinion with extra ceremony, so refuse
+  # rather than dress it up as a panel.
+  if (( strict == 1 )) && (( failed == 1 )); then
+    err '--strict: refusing to synthesize because a reviewer did not complete.'
     rm -rf "$tmpdir"
     return 1
-  }
+  fi
+  if (( completed < 2 )); then
+    err "only $completed reviewer(s) completed; refusing to synthesize a panel of fewer than two."
+    err 'Raise --timeout, drop the failing model with --models, or check model-peer doctor.'
+    rm -rf "$tmpdir"
+    return 1
+  fi
+  if (( failed == 1 )); then
+    note "synthesizing from $completed of ${#valid[@]} reviewers; the report will name the gaps."
+  fi
 
   printf '\n=== Final synthesis (%s) ===\n\n' "$(provider_label "$synthesizer")" >&2
-  prompt="$(synthesis_prompt "$focus" "$tmpdir")"
+  prompt="$(synthesis_prompt "$focus" "$tmpdir" "$dropped")"
   local synth_status=0
   # Synthesis is always a leaf: give it exactly enough depth to run and none to
   # spend, so the final report can never be outsourced.
@@ -731,6 +966,614 @@ USAGE
   fi
   rm -rf "$tmpdir"
   return "$synth_status"
+}
+
+# ---------------------------------------------------------------------------
+# Repo rules
+#
+# `model-peer init` drops the consultation rules into a project so the agent a
+# developer actually works with knows when to reach for a peer. These files are
+# for that primary agent, not for peers: a consulted peer is already told to
+# consult no one, and the block repeats that for the case where a peer loads the
+# file anyway because it runs in the same working directory.
+#
+# Only write paths the vendor CLIs genuinely load:
+#
+#   Claude Code  CLAUDE.md, and every .claude/rules/**/*.md
+#   Codex CLI    AGENTS.md (also AGENTS.override.md)
+#   Gemini CLI   GEMINI.md
+#
+# Codex and Gemini have no per-repo rules directory. A .codex/rules/ file or a
+# .gemini/global_rules.md is inert — Codex's extra context filenames come from
+# the global project_doc_fallback_filenames key, not from the repo — so init
+# never creates one. Verify before adding a path here.
+# ---------------------------------------------------------------------------
+
+RULES_BEGIN='<!-- BEGIN MODEL PEER RULES -->'
+RULES_END='<!-- END MODEL PEER RULES -->'
+RULES_CLAUDE_FILE='.claude/rules/cross-model-consultation.md'
+RULES_COMMAND_FILE='.claude/commands/peer-review.md'
+RULES_DRY_RUN=0
+RULES_FORCE=0
+
+# Profiles: 'shared' is model-agnostic, for one file every CLI reads. The others
+# address one CLI directly and name its two peers, for the --split layout.
+# Backticks here are literal Markdown, not command substitution.
+# shellcheck disable=SC2016
+rules_lead() {
+  case "$1" in
+    claude) printf 'You are Claude Code. **Codex** and **Gemini** are installed alongside you as\nindependent, read-only engineering peers. Reach them through Model Peer.\n' ;;
+    codex)  printf 'You are Codex. **Claude** and **Gemini** are installed alongside you as\nindependent, read-only engineering peers. Reach them through Model Peer.\n' ;;
+    gemini) printf 'You are Gemini. **Claude** and **Codex** are installed alongside you as\nindependent, read-only engineering peers. Reach them through Model Peer.\n' ;;
+    *)      printf 'Other vendors'"'"' coding CLIs are installed as independent, read-only engineering\npeers. Reach them through Model Peer, and consult any of them except yourself —\nit refuses to let a model consult itself.\n' ;;
+  esac
+}
+
+rules_peer_spec() {
+  case "$1" in
+    claude) printf '<codex|gemini>' ;;
+    codex)  printf '<claude|gemini>' ;;
+    gemini) printf '<claude|codex>' ;;
+    *)      printf '<claude|codex|gemini>' ;;
+  esac
+}
+
+rules_peer_a() {
+  case "$1" in claude) printf 'codex' ;; codex|gemini) printf 'claude' ;; *) printf 'codex' ;; esac
+}
+
+rules_peer_b() {
+  case "$1" in gemini) printf 'codex' ;; *) printf 'gemini' ;; esac
+}
+
+# The body is a quoted heredoc so its backticks stay literal Markdown; the three
+# per-profile values are substituted afterwards. '#' is the sed delimiter because
+# the peer spec contains '|'.
+rules_body() {
+  local profile="$1" spec peer_a peer_b
+  spec="$(rules_peer_spec "$profile")"
+  peer_a="$(rules_peer_a "$profile")"
+  peer_b="$(rules_peer_b "$profile")"
+  sed -e "s#@@SPEC@@#$spec#g" -e "s#@@PEER_A@@#$peer_a#g" -e "s#@@PEER_B@@#$peer_b#g" <<'BODY'
+
+```bash
+# one peer, one answer
+model-peer ask @@SPEC@@ "<focused question>"
+
+# every installed model reviews the current diff independently, then one
+# synthesizer reconciles the findings
+model-peer review ["focus"]
+
+# which peers are available here
+model-peer doctor
+```
+
+### When to consult a peer
+
+- before committing to an architecture, schema, or migration decision
+- when a bug has outlived two of your own hypotheses
+- security-sensitive work: authn/authz, sandboxing, input handling, secrets, crypto
+- unfamiliar code, or a dependency whose behavior you are inferring
+- reviewing an implementation you just wrote, before you hand it back
+- an assumption you cannot cheaply verify by reading the code
+- two approaches you cannot decide between — ask for the tradeoff, not the verdict
+
+Run `model-peer review` before opening a pull request, and again after any change
+to security-sensitive code.
+
+Do not consult for anything you can settle by reading the code. Every consultation
+costs a model call and tens of seconds.
+
+### How to ask
+
+The peer starts in this working directory with read-only tools, so **name files and
+symbols instead of pasting excerpts**, and ask one focused question. A peer that has
+to guess at scope returns generic advice.
+
+```bash
+# good — scoped to a symbol, answerable from the repository
+model-peer ask @@PEER_A@@ "In src/auth/session.ts, can refresh_token leave the old token valid if rotation fails midway?"
+
+# bad — no scope
+model-peer ask @@PEER_A@@ "review my auth code"
+```
+
+Pipe context in when the question is about something not on disk:
+
+```bash
+git diff main... | model-peer ask @@PEER_B@@ "What breaks in production?"
+```
+
+### Peer output is advisory
+
+Evaluate every response before acting on it. Peers do not know this project's
+invariants, so advice that contradicts the rules in this repository is wrong here
+however sound it sounds in general.
+
+When a peer materially changed a decision, say which model you asked and whether you
+took the advice. Never present a peer's output as your own conclusion.
+
+### Limits
+
+Leave `--depth` at its default of `1`: each peer answers alone, and lengthening the
+chain is a human's deliberate call. A model is never consulted by itself.
+
+If you are reading this **while acting as a peer** in someone else's consultation,
+these instructions do not apply to you. Answer the question and consult no one.
+BODY
+}
+
+# shellcheck disable=SC2016  # backticks are literal Markdown
+rules_block() {
+  local profile="$1"
+  printf '%s\n' "$RULES_BEGIN"
+  printf '<!-- Managed by `model-peer init` (v%s, profile: %s). Re-run to update; edit outside this block. -->\n' \
+    "$VERSION" "$profile"
+  printf '\n## Cross-model peer review\n\n'
+  rules_lead "$profile"
+  rules_body "$profile"
+  printf '%s\n' "$RULES_END"
+}
+
+# The Claude Code slash command is managed whole-file rather than as a block: it
+# has YAML front matter, so appending to a foreign file would corrupt it.
+rules_command_body() {
+  cat <<'CMD'
+---
+description: Independent cross-model review of the current working diff
+argument-hint: [focus instructions]
+allowed-tools: Bash(model-peer:*)
+---
+
+<!-- Managed by `model-peer init`. Re-run with --force to update. -->
+
+Run an independent cross-model review of the current working tree with
+`model-peer review`, passing `$ARGUMENTS` as the focus when it is non-empty.
+
+Every installed model reviews the same diff without seeing the others'
+conclusions, then a synthesizer reconciles them. This takes a few minutes and
+prints progress on stderr — let it finish.
+
+Then:
+
+1. Report the synthesized findings, grouped by severity, without softening them.
+2. For each finding, say whether you agree and why. A peer does not know this
+   project's invariants; project rules win over generic advice.
+3. Do not apply any fix unless I ask for it.
+CMD
+}
+
+rules_file_block() {
+  awk -v b="$RULES_BEGIN" -v e="$RULES_END" '
+    $0 == b { inb = 1 }
+    inb { print }
+    inb && $0 == e { exit }
+  ' "$1"
+}
+
+rules_file_profile() {
+  sed -n 's/^<!-- Managed by .*profile: \([a-z][a-z]*\)).*/\1/p' "$1" | head -1
+}
+
+# Creates the file, refreshes an existing managed block in place, or appends the
+# block to a file that does not have one. Content outside the markers is never
+# touched. Prints one status word.
+rules_apply_block() {
+  local file="$1" profile="$2" new tmp blk
+  new="$(rules_block "$profile")"
+
+  if [[ ! -e "$file" ]]; then
+    if (( RULES_DRY_RUN == 0 )); then
+      mkdir -p "$(dirname "$file")"
+      printf '%s\n' "$new" > "$file"
+    fi
+    printf 'created'
+    return
+  fi
+
+  if grep -Fqx "$RULES_BEGIN" "$file"; then
+    if [[ "$(rules_file_block "$file")" == "$new" ]]; then
+      printf 'current'
+      return
+    fi
+    if (( RULES_DRY_RUN == 0 )); then
+      tmp="$(mktemp "${TMPDIR:-/tmp}/model-peer-rules.XXXXXX")"
+      blk="$tmp.block"
+      printf '%s\n' "$new" > "$blk"
+      awk -v b="$RULES_BEGIN" -v e="$RULES_END" -v nb="$blk" '
+        $0 == b && !done { inb = 1; while ((getline line < nb) > 0) print line; close(nb); done = 1; next }
+        inb { if ($0 == e) inb = 0; next }
+        { print }
+      ' "$file" > "$tmp"
+      cat "$tmp" > "$file"
+      rm -f "$tmp" "$blk"
+    fi
+    printf 'updated'
+    return
+  fi
+
+  if (( RULES_DRY_RUN == 0 )); then
+    # tail -c 1 strips a trailing newline, so a non-empty result means the file
+    # does not end with one and the block would otherwise run onto the last line.
+    if [[ -s "$file" && -n "$(tail -c 1 "$file")" ]]; then
+      printf '\n' >> "$file"
+    fi
+    printf '\n%s\n' "$new" >> "$file"
+  fi
+  printf 'appended'
+}
+
+rules_apply_link() {
+  local link="$1" target="$2"
+  if [[ -L "$link" ]]; then
+    if [[ "$(readlink "$link")" == "$target" ]]; then
+      printf 'current'
+      return
+    fi
+    if (( RULES_FORCE == 1 )); then
+      (( RULES_DRY_RUN == 1 )) || ln -sfn "$target" "$link"
+      printf 'relinked'
+      return
+    fi
+    printf 'conflict'
+    return
+  fi
+  if [[ -e "$link" ]]; then
+    printf 'regular'
+    return
+  fi
+  if (( RULES_DRY_RUN == 0 )); then
+    mkdir -p "$(dirname "$link")"
+    ln -s "$target" "$link"
+  fi
+  printf 'linked'
+}
+
+rules_apply_command() {
+  local file="$1" new
+  new="$(rules_command_body)"
+  if [[ ! -e "$file" ]]; then
+    if (( RULES_DRY_RUN == 0 )); then
+      mkdir -p "$(dirname "$file")"
+      printf '%s\n' "$new" > "$file"
+    fi
+    printf 'created'
+    return
+  fi
+  if [[ "$(cat "$file")" == "$new" ]]; then
+    printf 'current'
+    return
+  fi
+  if (( RULES_FORCE == 1 )); then
+    (( RULES_DRY_RUN == 1 )) || printf '%s\n' "$new" > "$file"
+    printf 'updated'
+    return
+  fi
+  printf 'skipped'
+}
+
+rules_report() {
+  printf '  %-9s %s\n' "$1" "$2"
+}
+
+rules_in_list() {
+  local needle="$1" csv="$2" item
+  local IFS=,
+  for item in $csv; do
+    if [[ "$item" == "$needle" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+rules_validate_agents() {
+  local csv="$1" item
+  [[ -n "${csv//[[:space:],]/}" ]] || { err '--agents requires at least one model.'; return 2; }
+  local IFS=,
+  for item in $csv; do
+    case "$item" in
+      claude|codex|gemini|'') ;;
+      *) err "unknown agent '$item'. Use claude, codex, or gemini."; return 2 ;;
+    esac
+  done
+  return 0
+}
+
+rules_target_dir() {
+  local requested="$1"
+  if [[ -n "$requested" ]]; then
+    [[ -d "$requested" ]] || { err "no such directory: $requested"; return 2; }
+    ( cd "$requested" && pwd )
+    return
+  fi
+  if command -v git >/dev/null 2>&1 && git rev-parse --show-toplevel >/dev/null 2>&1; then
+    git rev-parse --show-toplevel
+    return
+  fi
+  pwd
+}
+
+rules_install_usage() {
+  cat <<'USAGE'
+Usage:
+  model-peer init [options]            # same as: model-peer rules install
+  model-peer rules install [options]
+
+Writes the cross-model consultation rules into a project, so the coding agent you
+work with knows when to reach for a peer. Re-running refreshes the managed block
+and leaves everything around it alone.
+
+Options:
+  --split          One tailored file per CLI, each naming that CLI's two peers:
+                     claude  -> .claude/rules/cross-model-consultation.md
+                     codex   -> AGENTS.md
+                     gemini  -> GEMINI.md
+                   Default instead writes one shared AGENTS.md and symlinks
+                   CLAUDE.md and GEMINI.md to it, so all three read one file.
+  --agents LIST    Comma-separated: claude, codex, gemini (default: all three,
+                   so a teammate on a different CLI still gets the rules)
+  --no-command     Skip .claude/commands/peer-review.md (the /peer-review
+                   slash command for Claude Code)
+  --dir DIR        Target directory (default: the Git root, else the cwd)
+  --dry-run        Report what would change; write nothing
+  --force          Overwrite files Model Peer owns outright — the slash command,
+                   and a CLAUDE.md/GEMINI.md symlink pointing elsewhere. Content
+                   outside a managed block in a regular file is never rewritten.
+  -h, --help       This help
+USAGE
+}
+
+cmd_rules_install() {
+  local split=0 agents='claude,codex,gemini' dir='' want_command=1 item
+  RULES_DRY_RUN=0
+  RULES_FORCE=0
+
+  while (( $# > 0 )); do
+    case "$1" in
+      --split) split=1 ;;
+      --agents)
+        shift; (( $# > 0 )) || { err '--agents requires a value.'; return 2; }
+        agents="$1"
+        ;;
+      --agents=*) agents="${1#--agents=}" ;;
+      --dir)
+        shift; (( $# > 0 )) || { err '--dir requires a value.'; return 2; }
+        dir="$1"
+        ;;
+      --dir=*) dir="${1#--dir=}" ;;
+      --no-command) want_command=0 ;;
+      --dry-run) RULES_DRY_RUN=1 ;;
+      --force) RULES_FORCE=1 ;;
+      -h|--help) rules_install_usage; return 0 ;;
+      -*) err "unknown init option: $1"; return 2 ;;
+      *) err "init takes no positional arguments (got '$1')."; return 2 ;;
+    esac
+    shift
+  done
+
+  rules_validate_agents "$agents" || return 2
+
+  local root
+  root="$(rules_target_dir "$dir")" || return 2
+
+  if (( RULES_DRY_RUN == 1 )); then
+    printf 'Model Peer rules — dry run, nothing written\n'
+  else
+    printf 'Model Peer rules\n'
+  fi
+  printf '  target    %s\n\n' "$root"
+
+  local status
+  if (( split == 1 )); then
+    if rules_in_list claude "$agents"; then
+      status="$(rules_apply_block "$root/$RULES_CLAUDE_FILE" claude)"
+      rules_report "$status" "$RULES_CLAUDE_FILE"
+    fi
+    if rules_in_list codex "$agents"; then
+      status="$(rules_apply_block "$root/AGENTS.md" codex)"
+      rules_report "$status" 'AGENTS.md'
+    fi
+    if rules_in_list gemini "$agents"; then
+      status="$(rules_apply_block "$root/GEMINI.md" gemini)"
+      rules_report "$status" 'GEMINI.md'
+    fi
+  else
+    # AGENTS.md is the anchor in shared mode even when Codex is not selected:
+    # it is the file the symlinks point at.
+    status="$(rules_apply_block "$root/AGENTS.md" shared)"
+    rules_report "$status" 'AGENTS.md'
+
+    local name
+    for name in CLAUDE.md GEMINI.md; do
+      case "$name" in
+        CLAUDE.md) rules_in_list claude "$agents" || continue ;;
+        GEMINI.md) rules_in_list gemini "$agents" || continue ;;
+      esac
+      status="$(rules_apply_link "$root/$name" 'AGENTS.md')"
+      case "$status" in
+        regular)
+          # A real file with the developer's own rules in it. Add the block
+          # rather than replacing their work with a symlink.
+          status="$(rules_apply_block "$root/$name" shared)"
+          rules_report "$status" "$name (regular file, not linked)"
+          ;;
+        conflict)
+          rules_report 'skipped' "$name (symlink to $(readlink "$root/$name"); --force to relink)"
+          ;;
+        *)
+          rules_report "$status" "$name -> AGENTS.md"
+          ;;
+      esac
+    done
+  fi
+
+  if (( want_command == 1 )) && rules_in_list claude "$agents"; then
+    status="$(rules_apply_command "$root/$RULES_COMMAND_FILE")"
+    case "$status" in
+      skipped) rules_report 'skipped' "$RULES_COMMAND_FILE (exists; --force to overwrite)" ;;
+      *)       rules_report "$status" "$RULES_COMMAND_FILE (/peer-review)" ;;
+    esac
+  fi
+
+  if (( RULES_DRY_RUN == 1 )); then
+    printf '\nRe-run without --dry-run to apply.\n'
+    return 0
+  fi
+
+  printf '\nCommit these files so your team gets them too.\n'
+  printf 'Next:  model-peer doctor        # confirm at least two CLIs are installed\n'
+  printf '       model-peer review        # cross-model review of the current diff\n'
+  if (( want_command == 1 )) && rules_in_list claude "$agents"; then
+    printf '       /peer-review             # the same, from inside Claude Code\n'
+  fi
+}
+
+cmd_rules_print() {
+  local profile='shared'
+  while (( $# > 0 )); do
+    case "$1" in
+      --profile)
+        shift; (( $# > 0 )) || { err '--profile requires a value.'; return 2; }
+        profile="$1"
+        ;;
+      --profile=*) profile="${1#--profile=}" ;;
+      --command) rules_command_body; return 0 ;;
+      -h|--help)
+        cat <<'USAGE'
+Usage:
+  model-peer rules print [--profile shared|claude|codex|gemini]
+  model-peer rules print --command
+
+Writes the rules block to stdout without touching any file, so you can review it,
+pipe it, or paste it into an existing rules file yourself. --command prints the
+Claude Code /peer-review slash command instead.
+USAGE
+        return 0
+        ;;
+      *) err "unknown print option: $1"; return 2 ;;
+    esac
+    shift
+  done
+  case "$profile" in
+    shared|claude|codex|gemini) ;;
+    *) err "unknown profile '$profile'. Use shared, claude, codex, or gemini."; return 2 ;;
+  esac
+  rules_block "$profile"
+}
+
+# Layout-agnostic: check whatever is installed rather than assuming a layout. The
+# profile is read back out of each managed block, so a --split repo and a shared
+# repo both verify correctly.
+cmd_rules_check() {
+  local dir=''
+  while (( $# > 0 )); do
+    case "$1" in
+      --dir)
+        shift; (( $# > 0 )) || { err '--dir requires a value.'; return 2; }
+        dir="$1"
+        ;;
+      --dir=*) dir="${1#--dir=}" ;;
+      -h|--help)
+        cat <<'USAGE'
+Usage:
+  model-peer rules check [--dir DIR]
+
+Verifies that every Model Peer rules block in the project matches the rules this
+version of Model Peer would write. Exits 0 when everything is current, 1 when a
+block is missing or stale. Suitable for CI.
+USAGE
+        return 0
+        ;;
+      *) err "unknown check option: $1"; return 2 ;;
+    esac
+    shift
+  done
+
+  local root
+  root="$(rules_target_dir "$dir")" || return 2
+
+  local found=0 stale=0 file profile rel
+  for rel in AGENTS.md CLAUDE.md GEMINI.md "$RULES_CLAUDE_FILE"; do
+    file="$root/$rel"
+    [[ -e "$file" ]] || continue
+    # A symlink resolves to a file checked in its own right; checking it twice
+    # would compare the same block against two different profiles.
+    if [[ -L "$file" ]]; then
+      printf '  %-9s %s -> %s\n' 'link' "$rel" "$(readlink "$file")"
+      continue
+    fi
+    grep -Fqx "$RULES_BEGIN" "$file" || continue
+    found=1
+    profile="$(rules_file_profile "$file")"
+    [[ -n "$profile" ]] || profile='shared'
+    if [[ "$(rules_file_block "$file")" == "$(rules_block "$profile")" ]]; then
+      printf '  %-9s %s (profile: %s)\n' 'current' "$rel" "$profile"
+    else
+      printf '  %-9s %s (profile: %s)\n' 'stale' "$rel" "$profile"
+      stale=1
+    fi
+  done
+
+  file="$root/$RULES_COMMAND_FILE"
+  if [[ -e "$file" ]]; then
+    if [[ "$(cat "$file")" == "$(rules_command_body)" ]]; then
+      printf '  %-9s %s\n' 'current' "$RULES_COMMAND_FILE"
+    else
+      printf '  %-9s %s\n' 'stale' "$RULES_COMMAND_FILE"
+      stale=1
+    fi
+  fi
+
+  if (( found == 0 )); then
+    err 'no Model Peer rules found in this project. Run: model-peer init'
+    return 1
+  fi
+  if (( stale == 1 )); then
+    err 'rules are out of date. Run: model-peer init'
+    return 1
+  fi
+  return 0
+}
+
+cmd_rules() {
+  case "${1:-}" in
+    install) shift; cmd_rules_install "$@" ;;
+    print)   shift; cmd_rules_print "$@" ;;
+    check)   shift; cmd_rules_check "$@" ;;
+    -h|--help|'')
+      cat <<'USAGE'
+Usage:
+  model-peer rules install [options]   Write the rules into this project
+  model-peer rules print [--profile P] Print the rules block to stdout
+  model-peer rules check [--dir DIR]   Verify the installed rules are current
+
+`model-peer init` is a shorthand for `model-peer rules install`.
+Run any subcommand with --help for its options.
+USAGE
+      ;;
+    *) err "unknown rules subcommand '$1'. Use install, print, or check."; return 2 ;;
+  esac
+}
+
+# Reports whether the project the developer is standing in has rules installed.
+# Missing rules are the single most common reason consultation never happens.
+doctor_repo_rules() {
+  local root rel file found=0
+  root="$(rules_target_dir '')" || return 0
+  for rel in AGENTS.md CLAUDE.md GEMINI.md "$RULES_CLAUDE_FILE"; do
+    file="$root/$rel"
+    [[ -f "$file" ]] || continue
+    grep -Fqx "$RULES_BEGIN" "$file" >/dev/null 2>&1 || continue
+    if (( found == 0 )); then
+      printf '\nProject rules in %s\n' "$root"
+      found=1
+    fi
+    printf '  %s\n' "$rel"
+  done
+  if (( found == 0 )); then
+    printf '\nProject rules: none in %s (run: model-peer init)\n' "$root"
+  fi
 }
 
 cmd_doctor() {
@@ -748,6 +1591,7 @@ cmd_doctor() {
   printf '  Claude  plan mode; Read/Glob/Grep only; stdin closed\n'
   printf '  Codex   read-only sandbox; ephemeral session; stdin closed\n'
   printf '  Gemini  plan mode + deny policy; extensions disabled; stdin closed\n'
+  printf '  Gemini  workspace trusted for the session so headless runs are not silent no-ops\n'
   printf '  All     chain guard via MODEL_PEER_STACK; no model consults itself\n'
   printf '  All     peers never write, and never gain a general shell\n'
 
@@ -759,6 +1603,17 @@ cmd_doctor() {
       *)          printf '  %-8s no    cannot scope execution to model-peer alone; always a leaf\n' "$(provider_label "$p")" ;;
     esac
   done
+
+  local effective_timeout
+  if effective_timeout="$(resolve_timeout '' 2>/dev/null)"; then
+    if (( effective_timeout > 0 )); then
+      printf '\nConsultation timeout:   %ss per peer\n' "$effective_timeout"
+    else
+      printf '\nConsultation timeout:   disabled\n'
+    fi
+  else
+    printf '\nConsultation timeout:   invalid MODEL_PEER_TIMEOUT=%s\n' "${MODEL_PEER_TIMEOUT:-}"
+  fi
 
   local effective_depth
   if effective_depth="$(resolve_max_depth '' 2>/dev/null)"; then
@@ -792,6 +1647,8 @@ cmd_doctor() {
     fi
   fi
 
+  doctor_repo_rules
+
   (( found == 1 )) || return 1
 }
 
@@ -804,6 +1661,14 @@ main() {
     review)
       shift
       cmd_review "$@"
+      ;;
+    init)
+      shift
+      cmd_rules_install "$@"
+      ;;
+    rules)
+      shift
+      cmd_rules "$@"
       ;;
     doctor)
       shift

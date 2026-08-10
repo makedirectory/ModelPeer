@@ -2,6 +2,92 @@
 
 All notable changes to Model Peer are documented here.
 
+## 0.3.0 - 2026-08-10
+
+Repository setup and orchestration robustness. `model-peer init` closes the gap
+between installing the tool and an agent ever using it; the review path is
+hardened against the failure modes that cost a whole run.
+
+### Added
+
+- `model-peer init` (alias for `model-peer rules install`) installs the
+  cross-model consultation rules into a repository. Default layout is one shared
+  `AGENTS.md` with `CLAUDE.md` and `GEMINI.md` symlinked to it; `--split` writes
+  one tailored file per CLI, each addressing that model directly and naming its
+  two peers. `--agents`, `--dir`, `--no-command`, `--dry-run`, and `--force`
+  narrow or preview the result.
+- Rules are written between `<!-- BEGIN MODEL PEER RULES -->` and
+  `<!-- END MODEL PEER RULES -->`. Content outside the markers is never rewritten,
+  so `init` is idempotent, appends below an existing `AGENTS.md`, and refreshes in
+  place after an upgrade.
+- `model-peer rules print [--profile P] [--command]` writes the rules to stdout
+  without touching a file.
+- `model-peer rules check` verifies that every managed block matches what the
+  installed version would write; exits `1` when a block is missing or stale, for
+  CI. It reads each block's recorded profile, so both layouts verify correctly.
+- `.claude/commands/peer-review.md`, giving Claude Code a `/peer-review` slash
+  command that runs a cross-model review of the current diff and reports the
+  synthesis with its own agreement or disagreement. Skip it with `--no-command`.
+- `--timeout S` on `ask` and `review`, plus `MODEL_PEER_TIMEOUT`, defaulting to
+  600 seconds; `0` disables it. Consultations report progress on stderr every 30
+  seconds, so a slow peer is distinguishable from a hung one. Exits `124` on
+  timeout, matching `timeout(1)`.
+- `review --strict` refuses to synthesize unless every reviewer completed, which
+  was the behavior before this release.
+- `model-peer doctor` reports the effective consultation timeout and whether the
+  current project has rules installed.
+- Documentation: "In your workflow" covering the three moments consultation
+  actually happens, team rollout, and CI verification; and "Troubleshooting"
+  covering hangs, partial panels, Gemini's trust gate, and missing untracked
+  files. `agent-rules` now explains what the rules say rather than how to copy a
+  file.
+
+### Changed
+
+- A reviewer that times out, fails, or returns nothing is dropped from the panel
+  and named, instead of failing the entire run. Synthesis proceeds while at least
+  two reviewers produced a real review, and is refused below that — two
+  independent views are the minimum that makes a cross-model review worth the
+  name. The synthesizer is told which reviewers are missing and instructed to
+  report the gap, so a partial panel is never presented as a complete one.
+- `examples/AGENTS.md` is generated from `model-peer rules print`. `make sync`
+  regenerates it and `make check-sync` fails the build on drift, so the shipped
+  template can no longer disagree with what `init` writes.
+- The rules text tells agents not to consult for anything answerable by reading
+  the code, and ends with a stand-down line for a model that loads the file while
+  acting as a peer in someone else's consultation.
+- The documentation site moved to its own domain, <https://modelpeer.app>, via
+  `documentation/static/CNAME` and matching `url` / `baseUrl`.
+
+### Fixed
+
+- **Untracked files were invisible to reviewers.** Review context was built from
+  `git diff HEAD`, which cannot see untracked files, and `git status --short`
+  collapses a new directory to a single `?? src/` line — so an entire new package
+  reached reviewers as one path, with no filenames and no contents. Context now
+  includes an add-diff for every untracked, non-ignored file, uses
+  `--untracked-files=all` for the status listing, and marks the patch
+  `includes_untracked="true"`. Binaries are summarized rather than dumped.
+- **A hung peer could hang the whole run indefinitely.** Consultations are now
+  bounded, and on timeout the peer's entire process group is signalled rather
+  than just the process Model Peer launched. Signalling only the direct child
+  left vendor helper processes holding the inherited stdout, so the downstream
+  pipeline never saw EOF and the hang survived the kill.
+- **Gemini failed silently in untrusted directories.** Its folder-trust gate
+  refuses to work headlessly and exits `0` having produced nothing, which a panel
+  read as "this reviewer found no issues". Model Peer now passes `--skip-trust`,
+  feature-detected from `gemini --help`. This does not widen the boundary: Plan
+  mode, the unconditional deny policy, and `-e none` are all passed explicitly and
+  never depended on the trust gate.
+- **An empty review counted as a clean review.** A reviewer that exits `0` with
+  zero bytes of output is now treated as a failure.
+- `init` writes only paths the vendor CLIs genuinely load: `.claude/rules/**/*.md`
+  and `CLAUDE.md` for Claude Code, `AGENTS.md` for Codex, `GEMINI.md` for Gemini.
+  A `.codex/rules/*.md` or `.gemini/global_rules.md` file is never read by those
+  CLIs — Codex's extra context filenames come from the global
+  `project_doc_fallback_filenames` key, not from the repository — so Model Peer
+  does not create them.
+
 ## 0.2.0 - 2026-08-09
 
 ### Added

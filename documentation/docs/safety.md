@@ -1,7 +1,7 @@
 ---
 id: safety
 title: Safety boundaries
-sidebar_position: 6
+sidebar_position: 7
 ---
 
 # Safety boundaries
@@ -57,7 +57,8 @@ suite asserts this.
 ## Gemini
 
 ```bash
-gemini --approval-mode plan --policy <generated.toml> -e none -p "<prompt>" </dev/null
+gemini --approval-mode plan --policy <generated.toml> -e none --skip-trust \
+  -p "<prompt>" </dev/null
 ```
 
 `--approval-mode plan` is documented upstream as a strict read-only mode. Model Peer
@@ -92,6 +93,25 @@ priority = 999
 ```
 
 Extensions are disabled with `-e none`.
+
+### Why `--skip-trust`
+
+Gemini's folder-trust gate refuses to work in a directory it has not been told to
+trust. Headlessly that refusal is **silent**: it exits `0` having produced nothing,
+which a review panel would otherwise read as "this reviewer found no issues".
+
+Model Peer trusts the workspace for the session so a consultation is not a silent
+no-op. This does not widen the boundary, because none of the guarantees above depend
+on the trust gate: Plan mode, the unconditional deny policy, and `-e none` are all
+passed explicitly on the command line and apply either way. The gate's job is to stop
+an untrusted directory from enabling tool execution and project configuration; the
+deny policy already denies the tools that matter, at priority 999.
+
+The flag is feature-detected from `gemini --help`, so builds that predate it are
+invoked exactly as before.
+
+As a second line of defense against silent failure of any kind, a reviewer that
+returns zero bytes is treated as a failure rather than as an empty finding list.
 
 **These rules are unconditional.** `--depth` never relaxes them, which is why a
 Gemini peer is always a leaf. The Plan-mode pair matters specifically because exiting

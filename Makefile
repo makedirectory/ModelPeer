@@ -8,10 +8,15 @@ lint:
 	@if command -v shellcheck >/dev/null 2>&1; then shellcheck bin/* install.sh uninstall.sh tests/smoke.sh tools/*.sh; else echo "shellcheck not installed; skipped"; fi
 
 # install.sh embeds a verbatim copy of bin/model-peer so the curl install path
-# stays standalone. Regenerate it after any change to bin/model-peer.
+# stays standalone, and examples/AGENTS.md must match what `model-peer init`
+# writes. Regenerate both after any change to bin/model-peer.
 sync:
 	bash tools/sync-installer.sh
+	bash bin/model-peer rules print > examples/AGENTS.md
+	@echo "sync: examples/AGENTS.md now matches 'model-peer rules print'."
 
 check-sync:
 	@sed -n "/<<'__MODEL_PEER__'/,/^__MODEL_PEER__$$/p" install.sh | sed '1d;$$d' | diff -q - bin/model-peer >/dev/null \
 		|| { echo "install.sh is out of sync with bin/model-peer; run: make sync" >&2; exit 1; }
+	@bash bin/model-peer rules print | diff -q - examples/AGENTS.md >/dev/null \
+		|| { echo "examples/AGENTS.md is out of sync with the rules template; run: make sync" >&2; exit 1; }

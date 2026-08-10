@@ -3,6 +3,10 @@ import {themes as prismThemes} from 'prism-react-renderer';
 
 const ORG = 'makedirectory';
 const REPO = 'ModelPeer';
+// Custom domain. GitHub Pages learns it from static/CNAME, which Docusaurus
+// copies verbatim into the build output; url/baseUrl must agree with it or every
+// generated absolute link and the sitemap point at the wrong host.
+const SITE_URL = 'https://modelpeer.app';
 
 /** @type {import('@docusaurus/types').Config} */
 const config = {
@@ -10,8 +14,8 @@ const config = {
   tagline: 'Cross-model peer review for coding agents',
   favicon: 'img/favicon.svg',
 
-  url: `https://${ORG}.github.io`,
-  baseUrl: `/${REPO}/`,
+  url: SITE_URL,
+  baseUrl: '/',
   organizationName: ORG,
   projectName: REPO,
   trailingSlash: false,

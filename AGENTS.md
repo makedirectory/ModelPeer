@@ -27,6 +27,13 @@ The docs site lives in `documentation/` (Docusaurus, deployed to GitHub Pages by
 `.github/workflows/docs.yml`). It is the only part of the repo with Node
 dependencies; the tool itself stays dependency-free.
 
+It is served from the custom domain **https://modelpeer.app**, which depends on
+three things staying in agreement: `documentation/static/CNAME` (Docusaurus copies
+it verbatim into the build, and GitHub Pages reads it), and `url` / `baseUrl` in
+`docusaurus.config.js`. Reverting `baseUrl` to `/ModelPeer/` breaks every asset
+path on the live site. Link to docs pages from the README as
+`https://modelpeer.app/<page>`, never as a `github.io` URL.
+
 ```bash
 cd documentation && npm install && npm run build   # build fails on broken links
 ```
@@ -53,14 +60,19 @@ copy of `bin/model-peer` inside a `<<'__MODEL_PEER__'` heredoc. **Any change to
 build otherwise, and `tests/smoke.sh` independently installs and `cmp`s the result.
 This is the single easiest way to break the repo.
 
+`examples/AGENTS.md` is the second copy: it is generated from
+`model-peer rules print`, so any change to the rules text needs `make sync` too.
+`make check-sync` and `tests/smoke.sh` both diff it.
+
 `bin/ask-claude`, `bin/ask-codex`, `bin/ask-gemini`, and `bin/ai-review` are
 four-line compatibility shims that `exec` into `model-peer`; they are also embedded
 in `install.sh`.
 
 ### Command structure
 
-`bin/model-peer` dispatches from `main` into `cmd_ask`, `cmd_review`, or
-`cmd_doctor`. Both consultation paths funnel through `run_provider`, which is the
+`bin/model-peer` dispatches from `main` into `cmd_ask`, `cmd_review`,
+`cmd_rules_install`, `cmd_rules`, or `cmd_doctor`. Both consultation paths funnel
+through `run_provider`, which is the
 single chokepoint that enforces the guards, pushes the chain, and computes the
 depth budget before delegating to `run_claude` / `run_codex` / `run_gemini`. Put
 policy in `run_provider`, not in the per-provider runners — those exist only to
@@ -117,6 +129,65 @@ moving away from that.
 chain is empty, so each reviewer starts fresh; a review launched from inside a peer
 chain inherits that chain and cannot escape the guard. The synthesizer is forced to
 be a leaf by passing it a depth limit of exactly `stack_depth + 1`.
+
+### Repo rules (`init` / `rules`)
+
+`model-peer init` writes the consultation rules into a developer's project. The
+rules text lives in `rules_body` as a quoted heredoc with `@@SPEC@@`, `@@PEER_A@@`,
+and `@@PEER_B@@` placeholders substituted afterwards — quoted so the Markdown
+backticks stay literal, substituted with `#` as the sed delimiter because the peer
+spec contains `|`.
+
+Two invariants:
+
+1. **Only write paths a vendor CLI actually loads.** Claude Code globs
+   `.claude/rules/**/*.md` and reads `CLAUDE.md`; Codex reads `AGENTS.md` and
+   `AGENTS.override.md`; Gemini reads `GEMINI.md`. Codex and Gemini have no
+   per-repo rules directory — `.codex/rules/*.md` and `.gemini/global_rules.md`
+   are inert, since Codex's extra context filenames come from the global
+   `project_doc_fallback_filenames` key. Verify against the shipping CLI before
+   adding a path.
+2. **Never rewrite content outside the markers.** Everything between
+   `<!-- BEGIN MODEL PEER RULES -->` and `<!-- END MODEL PEER RULES -->` is
+   Model Peer's; everything else belongs to the developer. `--force` relinks
+   symlinks and replaces the slash command, and still never touches a regular
+   file's own content.
+
+The profile (`shared`, `claude`, `codex`, `gemini`) is recorded in the managed
+header comment, which is how `rules check` knows what to compare a file against
+without being told the layout. Changing the header format breaks `check` on every
+already-installed repo.
+
+### Orchestration robustness
+
+A peer that never answers is the failure mode that costs the most, because it
+costs a whole review. Three rules hold here:
+
+1. **Every consultation is bounded.** `run_with_limit` polls rather than shelling
+   out to `timeout(1)`, which macOS does not ship. On expiry it signals the
+   **process group** — `set -m` puts the child in its own group first. Signalling
+   only the direct child leaves vendor helper processes holding the inherited
+   stdout, so the downstream `tee` never sees EOF and the hang outlives the kill.
+   This is easy to reintroduce; the smoke test asserts no orphan survives.
+2. **Silence is failure, not consent.** A reviewer that exits `0` with zero bytes
+   has reviewed nothing. Gemini's folder-trust gate failed exactly this way, and
+   an empty file reaching the synthesizer reads as "this model found no issues" —
+   the most dangerous possible misreport.
+3. **A partial panel must say it is partial.** One reviewer failing drops that
+   reviewer, not the run, but `synthesis_prompt` receives the dropped list and is
+   told a gap in coverage is not evidence of safety. Synthesis below two surviving
+   reviewers is refused outright: a one-model panel is not a cross-model review.
+
+### Review context
+
+`make_review_context` must show reviewers the code under review, which is not what
+`git diff` alone provides. Untracked files are invisible to `git diff` at any
+revision, and `git status --short` collapses a new directory to one `?? src/` entry,
+so a whole new package can arrive as a single path. Context therefore uses
+`--untracked-files=all` and synthesizes an add-diff per untracked file with
+`git diff --no-index -- /dev/null <path>`. Keep `--exclude-standard` so ignored
+files stay out, and never use `git add -N` to make untracked files diffable — that
+mutates the developer's index, and a review command must not.
 
 ### Provider safety contracts
 
