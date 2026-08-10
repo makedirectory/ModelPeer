@@ -56,7 +56,7 @@ EOF
 chmod +x "$TMP/bin/claude" "$TMP/bin/codex" "$TMP/bin/gemini"
 
 # Basic CLI/version.
-[[ "$(model-peer --version)" == 'model-peer 0.2.0' ]]
+[[ "$(model-peer --version)" == 'model-peer 0.3.0' ]]
 
 # Ask dispatch + safety args + stdin closure.
 printf 'sentinel\n' | model-peer ask codex 'review this' >/dev/null

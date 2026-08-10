@@ -143,7 +143,7 @@ In CI:
 ```yaml
 - name: Check agent rules
   run: |
-    curl -fsSL https://raw.githubusercontent.com/makedirectory/ModelPeer/v0.2.0/install.sh | bash
+    curl -fsSL https://raw.githubusercontent.com/makedirectory/ModelPeer/v0.3.0/install.sh | bash
     ~/.local/bin/model-peer rules check
 ```
 

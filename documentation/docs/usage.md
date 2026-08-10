@@ -154,7 +154,7 @@ model-peer doctor
 ```
 
 ```text
-Model Peer v0.2.0
+Model Peer v0.3.0
 
 Claude    installed  /Users/you/.local/bin/claude
 Codex     installed  /opt/homebrew/bin/codex

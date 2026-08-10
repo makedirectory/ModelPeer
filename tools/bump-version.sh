@@ -38,6 +38,9 @@ FILES=(
   README.md
   tests/smoke.sh
   documentation/docs/install.md
+  documentation/docs/intro.md
+  documentation/docs/usage.md
+  documentation/docs/workflow.md
   documentation/package.json
 )
 
@@ -47,13 +50,24 @@ for f in "${FILES[@]}"; do
   replace "$f"
 done
 
-# install.sh embeds bin/model-peer verbatim; regenerate rather than trust the sed.
+# Both generated copies are rebuilt rather than trusted to the sed above:
+# install.sh embeds bin/model-peer verbatim, and examples/AGENTS.md is the output
+# of `model-peer rules print`, whose managed header carries the version.
 bash tools/sync-installer.sh >/dev/null
+bash bin/model-peer rules print > examples/AGENTS.md
 
-remaining="$(grep -rlF "$old" bin VERSION "${FILES[@]}" 2>/dev/null || true)"
+# Sweep the whole tree rather than only the files listed above, so a version
+# pinned in a page nobody remembered to add here still fails the bump. The
+# CHANGELOG is excluded on purpose: old releases keep their own numbers.
+remaining="$(git ls-files -z \
+  | grep -zv '^CHANGELOG\.md$' \
+  | grep -zv '^tools/bump-version\.sh$' \
+  | grep -zv '^documentation/package-lock\.json$' \
+  | xargs -0 grep -lF "$old" 2>/dev/null || true)"
 if [[ -n "$remaining" ]]; then
   echo "bump-version: $old still present in:" >&2
   printf '%s\n' "$remaining" | sed 's/^/  /' >&2
+  echo "bump-version: add these to FILES, or fix them by hand." >&2
   exit 1
 fi
 
