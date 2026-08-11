@@ -2,6 +2,68 @@
 
 All notable changes to Model Peer are documented here.
 
+## 0.5.0 - 2026-08-10
+
+Setup is now a skill. Every file `init` writes is self-contained and owned by
+Model Peer, in the directory each vendor set aside for exactly this. Nothing of
+the developer's is read, written, or symlinked.
+
+```text
+.claude/skills/cross-model-review/SKILL.md
+.codex/skills/cross-model-review/SKILL.md
+.gemini/skills/cross-model-review/SKILL.md
+.claude/commands/peer-review.md
+```
+
+### Added
+
+- `model-peer update` refreshes the managed files already installed in a project
+  so they match the running version. It only touches files that already exist and
+  that Model Peer wrote, and never installs an agent that is not already present,
+  so it cannot quietly widen a repository's footprint.
+- `model-peer update --check` reports drift and exits `1` without writing —
+  the CI form.
+- `model-peer init --print[=AGENT]` writes a `SKILL.md` to stdout and touches
+  nothing. `AGENT` is `claude`, `codex`, `gemini`, or `command`.
+- A managed-file marker, so Model Peer can tell a file it wrote from one a
+  developer put at the same path. Foreign files are reported and left alone
+  unless `--force`.
+
+### Changed
+
+- **`init` installs an agent skill per CLI instead of editing rules files.** All
+  three vendors support `<vendor-dir>/skills/<name>/SKILL.md`, which is the only
+  mechanism common to them that is self-contained. Because nothing Model Peer
+  writes lives inside a file someone else owns, managed files are compared and
+  replaced whole — no marker surgery — which is what makes `update` tractable.
+- `AGENTS.md`, `CLAUDE.md`, and `GEMINI.md` are never read, written, appended to,
+  or symlinked. `--agents` defaults to all three CLIs again, because including
+  one no longer means editing anything of yours.
+- The skill's `description` carries the trigger conditions, not just a summary.
+  Only `name` and `description` reach the model's system prompt; the body loads
+  on activation, so a description that merely says what the skill is would never
+  fire it.
+- `model-peer rules <install|print|check>` is replaced by `init` and `update`.
+- `model-peer doctor` reports which skills the current project has installed.
+- `examples/AGENTS.md` becomes `examples/SKILL.md`, generated from
+  `model-peer init --print`.
+- `init` warns that Gemini only loads project skills in a trusted folder, rather
+  than leaving the developer to discover an empty `gemini skills list`.
+
+### Fixed
+
+- Corrects a claim made in 0.3.0. `.codex/rules/` **is** a real directory Codex
+  reads, but it holds Starlark `.rules` files controlling which commands Codex may
+  run outside its sandbox — a permissions mechanism, not agent context. Markdown
+  there is still ignored, but not for the reason previously documented.
+- `.agents/skills/` is a Gemini-only alias; Codex and Claude Code do not read it,
+  so each vendor's own directory is used.
+
+Skill discovery was verified against the shipping CLIs rather than their
+documentation: `gemini skills list` reports the installed skill, a `codex exec`
+run lists it among its available skills, and Claude Code quotes its description
+back from the system prompt.
+
 ## 0.4.0 - 2026-08-10
 
 `model-peer init` was intrusive. It wrote the developer's `AGENTS.md`, and

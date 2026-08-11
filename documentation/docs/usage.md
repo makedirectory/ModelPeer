@@ -12,10 +12,11 @@ sidebar_position: 3
 model-peer init
 ```
 
-Writes `.claude/rules/cross-model-consultation.md` and the `/peer-review` slash
-command, so your coding agent reaches for a peer on its own. It writes only files
-Model Peer owns — your `AGENTS.md`, `CLAUDE.md`, and `GEMINI.md` are untouched.
-Add `--agents claude,codex,gemini` to opt Codex and Gemini in.
+Installs a `cross-model-review` skill under `.claude/skills/`, `.codex/skills/`,
+and `.gemini/skills/`, plus the `/peer-review` slash command for Claude Code, so
+your coding agent reaches for a peer on its own. Everything it writes is
+self-contained and owned by Model Peer — your `AGENTS.md`, `CLAUDE.md`, and
+`GEMINI.md` are never touched. Run `model-peer update` after upgrading.
 
 → [In your workflow](workflow) · [Agent rules](agent-rules)
 
@@ -155,7 +156,7 @@ model-peer doctor
 ```
 
 ```text
-Model Peer v0.4.0
+Model Peer v0.5.0
 
 Claude    installed  /Users/you/.local/bin/claude
 Codex     installed  /opt/homebrew/bin/codex
@@ -178,11 +179,13 @@ Consultation timeout:   600s per peer
 
 Peer-chain depth limit: 1 (max 10)
 
-Project rules in /Users/you/code/your-project
-  .claude/rules/cross-model-consultation.md
+Project skills in /Users/you/code/your-project
+  .claude/skills/cross-model-review/SKILL.md
+  .codex/skills/cross-model-review/SKILL.md
+  .claude/commands/peer-review.md
 ```
 
-If the last section reads `Project rules: none`, the agent in that repository has
+If the last section reads `Project skills: none`, the agent in that repository has
 no reason to consult anyone — run [`model-peer init`](workflow).
 
 ## Exit codes
@@ -190,7 +193,7 @@ no reason to consult anyone — run [`model-peer init`](workflow).
 | Code | Meaning |
 |---|---|
 | `0` | success |
-| `1` | too few reviewers completed, or the synthesizer failed |
+| `1` | too few reviewers completed, the synthesizer failed, or `update --check` found drift |
 | `2` | usage or validation error |
 | `64` | refused by a chain guard (depth limit or self-consultation) |
 | `124` | a consultation exceeded its timeout |

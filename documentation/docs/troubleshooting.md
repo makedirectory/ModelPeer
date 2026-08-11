@@ -117,6 +117,27 @@ git status --short --branch --untracked-files=all
 If a file is missing from that list, it is ignored by Git and Model Peer will not
 send it.
 
+## A skill is installed but never fires
+
+Only a skill's `name` and `description` reach the model's system prompt; the body
+loads when the model decides the skill applies. If a skill never activates, the
+description is usually the reason — it has to name the situations that should
+trigger it, not just describe what the skill is.
+
+`model-peer update` rewrites the shipped description, so start there:
+
+```bash
+model-peer update --check
+```
+
+For Gemini specifically, check folder trust. In an untrusted directory it reports
+`Skipping project agents due to untrusted folder` and loads no project skills at
+all. Trust the directory once from an interactive `gemini` session.
+
+```bash
+gemini skills list        # should list cross-model-review
+```
+
 ## Large diffs get truncated
 
 Patches are embedded up to `MODEL_PEER_MAX_DIFF_BYTES` (default 500000). Beyond
@@ -135,7 +156,7 @@ patch tends toward generic findings.
 | Code | Meaning |
 |---|---|
 | `0` | Success |
-| `1` | Too few reviewers completed, or `rules check` found missing or stale rules |
+| `1` | Too few reviewers completed, or `update --check` found missing or stale files |
 | `2` | Usage or validation error |
 | `64` | Refused by a chain guard — depth limit or self-consultation |
 | `124` | A consultation exceeded its timeout |

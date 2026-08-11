@@ -15,10 +15,9 @@ command | model-peer ask <claude|codex|gemini> [--depth N] [--timeout S]
 model-peer review [--models LIST] [--synthesizer MODEL] [--depth N]
                   [--timeout S] [--strict] ["focus"]
 
-model-peer init [--agents LIST] [--no-command] [--dir DIR] [--dry-run] [--force]
-model-peer rules install [same options as init]
-model-peer rules print [--profile shared|claude|codex|gemini] [--command]
-model-peer rules check [--dir DIR]
+model-peer init [--agents LIST] [--no-command] [--print[=AGENT]] [--dir DIR]
+                [--dry-run] [--force]
+model-peer update [--check] [--dir DIR]
 
 model-peer doctor
 model-peer --version
@@ -63,69 +62,56 @@ refused below that. See [Troubleshooting](troubleshooting).
 Review context covers tracked changes **and** untracked, non-ignored files, so newly
 added code is reviewed rather than merely listed.
 
-## `init` / `rules install`
+## `init`
 
-Install the cross-model consultation rules into a project. `model-peer init` is a
-shorthand for `model-peer rules install`. See [In your workflow](workflow).
+Install the cross-model review skill into a project. See
+[In your workflow](workflow).
 
 | Option | Description |
 |---|---|
-| `--agents LIST` | Comma-separated: `claude`, `codex`, `gemini` (default: `claude`) |
+| `--agents LIST` | Comma-separated: `claude`, `codex`, `gemini` (default: all three) |
 | `--no-command` | Skip `.claude/commands/peer-review.md` (the `/peer-review` slash command) |
+| `--print[=AGENT]` | Print the `SKILL.md` to stdout and exit. `AGENT` is `claude` (default), `codex`, `gemini`, or `command` |
 | `--dir DIR` | Target directory (default: the Git root, else the cwd) |
 | `--dry-run` | Report what would change; write nothing |
-| `--force` | Overwrite a slash command that is not Model Peer's, and write through a symlinked `AGENTS.md`/`GEMINI.md` |
+| `--force` | Replace a file at a managed path that Model Peer did not write |
 | `-h`, `--help` | Usage |
 
 Files written:
 
-| Agent | File | Default |
-|---|---|---|
-| `claude` | `.claude/rules/cross-model-consultation.md` | yes |
-| `claude` | `.claude/commands/peer-review.md` | yes, unless `--no-command` |
-| `codex` | `AGENTS.md` | **no** — opt in with `--agents codex` |
-| `gemini` | `GEMINI.md` | **no** — opt in with `--agents gemini` |
+| Agent | Path |
+|---|---|
+| `claude` | `.claude/skills/cross-model-review/SKILL.md` |
+| `codex` | `.codex/skills/cross-model-review/SKILL.md` |
+| `gemini` | `.gemini/skills/cross-model-review/SKILL.md` |
+| `claude` | `.claude/commands/peer-review.md`, unless `--no-command` |
 
-`CLAUDE.md` is never written, and no symlinks are created.
+`AGENTS.md`, `CLAUDE.md`, and `GEMINI.md` are never read, written, or symlinked.
+Every managed file is owned outright and replaced whole, so nothing Model Peer
+writes lives inside a file you own.
 
-Claude Code is the only one of the three with a per-repository rules directory, so
-it is the only one Model Peer can wire up without editing a file you own. Codex
-reads `AGENTS.md` and Gemini reads `GEMINI.md`; those are yours, hence opt-in.
-There is no per-repo rules directory for either, so `init` never creates `.codex/`
-or `.gemini/` — files there are inert.
+A file at a managed path that Model Peer did not write is reported and left alone
+unless `--force` is given.
 
-Content lives between `<!-- BEGIN MODEL PEER RULES -->` and
-`<!-- END MODEL PEER RULES -->`. Everything outside those markers is never
-rewritten, so re-running is safe and idempotent. A symlinked context file is
-refused rather than written through, unless `--force`.
+## `update`
 
-## `rules print`
-
-Write the rules to stdout without touching any file.
+Refresh the managed files already installed in a project so they match the running
+version of Model Peer.
 
 | Option | Description |
 |---|---|
-| `--profile P` | `shared` (default), `claude`, `codex`, or `gemini` |
-| `--command` | Print the `/peer-review` slash command instead |
-
-## `rules check`
-
-Verify that every managed block in the project matches what this version of Model
-Peer would write. The profile is recorded in each block, so both layouts verify
-correctly.
-
-| Option | Description |
-|---|---|
+| `--check` | Report drift and exit `1` if anything is stale; write nothing. For CI |
 | `--dir DIR` | Target directory (default: the Git root, else the cwd) |
 
-Exits `0` when everything is current, `1` when a block is missing or stale.
-Suitable for CI.
+`update` only touches files that already exist and that Model Peer wrote. It never
+installs an agent that is not already present — use `init` for that — so it cannot
+quietly widen what is in your repository. Exits `1` when nothing is installed.
 
 ## `doctor`
 
 Reports installed CLIs and their paths, authentication availability, safety defaults,
 the per-provider nested-consultation matrix, the effective depth limit, any
-active chain, and whether the current project has rules installed.
+active chain, and which Model Peer skills the current project has installed.
 
 ## Compatibility commands
 
@@ -163,7 +149,7 @@ MODEL_PEER_REVIEWERS=codex,gemini model-peer review
 | Code | Meaning |
 |---|---|
 | `0` | Success |
-| `1` | Too few reviewers completed, the synthesizer failed, or `rules check` found missing or stale rules |
+| `1` | Too few reviewers completed, the synthesizer failed, or `update --check` found missing or stale files |
 | `2` | Usage or validation error |
 | `64` | Refused by a chain guard — depth limit or self-consultation |
 | `124` | A consultation exceeded its timeout |

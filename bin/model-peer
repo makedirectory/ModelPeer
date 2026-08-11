@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="0.4.0"
+VERSION="0.5.0"
 PROGRAM="model-peer"
 
 usage() {
   cat <<'USAGE'
-Model Peer v0.4.0 — cross-model peer review for coding agents.
+Model Peer v0.5.0 — cross-model peer review for coding agents.
 
 Usage:
   model-peer ask claude "<focused question>"
@@ -16,8 +16,8 @@ Usage:
 
   model-peer review [options] ["focus instructions"]
 
-  model-peer init [options]            Install the consultation rules in a repo
-  model-peer rules <install|print|check>
+  model-peer init [options]            Install the cross-model review skill
+  model-peer update [--check]          Refresh installed files to this version
   model-peer doctor
   model-peer --version
 
@@ -37,12 +37,13 @@ Review options:
   --strict               Refuse to synthesize unless every reviewer completed
 
 Init options:
-  --agents LIST          Comma-separated: claude, codex, gemini (default: claude).
-                         Only Claude Code has a per-repo rules directory; codex
-                         and gemini opt in to a managed block in your AGENTS.md
-                         and GEMINI.md respectively.
+  --agents LIST          Comma-separated: claude, codex, gemini (default: all)
   --no-command           Skip the Claude Code /peer-review slash command
+  --print[=AGENT]        Print the SKILL.md to stdout; write nothing
   --dry-run              Report what would change; write nothing
+
+  init writes only self-contained files Model Peer owns, under each vendor's
+  skills directory. Your AGENTS.md, CLAUDE.md, and GEMINI.md are never touched.
 
 Peer-chain depth:
   Depth is a limit, never a permission. Depth 1 (default) means a peer answers on
@@ -888,52 +889,59 @@ USAGE
 }
 
 # ---------------------------------------------------------------------------
-# Repo rules
+# Repo setup: skills
 #
-# `model-peer init` drops the consultation rules into a project so the agent a
-# developer actually works with knows when to reach for a peer. These files are
-# for that primary agent, not for peers: a consulted peer is already told to
-# consult no one, and the block repeats that for the case where a peer loads the
-# file anyway because it runs in the same working directory.
+# `model-peer init` installs an agent skill so the coding agent a developer works
+# with knows when to reach for a peer. Every file it writes is one Model Peer
+# owns outright, in a directory the vendor set aside for exactly this:
 #
-# Only write paths the vendor CLIs genuinely load:
+#   .claude/skills/cross-model-review/SKILL.md
+#   .codex/skills/cross-model-review/SKILL.md
+#   .gemini/skills/cross-model-review/SKILL.md
+#   .claude/commands/peer-review.md            (Claude Code slash command)
 #
-#   Claude Code  CLAUDE.md, and every .claude/rules/**/*.md
-#   Codex CLI    AGENTS.md (also AGENTS.override.md)
-#   Gemini CLI   GEMINI.md
+# AGENTS.md, CLAUDE.md, and GEMINI.md are the developer's. Model Peer never reads
+# from, writes to, or symlinks them. That is the whole point of using skills: a
+# self-contained directory can be rewritten wholesale by `model-peer update`,
+# with no marker surgery inside a file someone else owns.
 #
-# Codex and Gemini have no per-repo rules directory. A .codex/rules/ file or a
-# .gemini/global_rules.md is inert — Codex's extra context filenames come from
-# the global project_doc_fallback_filenames key, not from the repo — so init
-# never creates one. Verify before adding a path here.
+# Verified against the shipping CLIs, not the docs:
+#   gemini  `gemini skills list` reports a project skill (folder trust required)
+#   codex   `codex exec` lists it among available skills
+#   claude  .claude/skills and SKILL.md are both in the binary
 #
-# That asymmetry drives the default. .claude/rules/ and .claude/commands/ are
-# Model Peer's to write. AGENTS.md and GEMINI.md are the developer's, and are
-# only touched when named in --agents. Adding a provider whose only reachable
-# path is a file the developer owns means adding it as opt-in, not as default.
+# `.codex/rules/` is a real directory but holds Starlark `.rules` files that
+# govern command execution, not agent context. Markdown there is ignored.
+# `.agents/skills/` is a Gemini-only alias; Codex and Claude do not read it.
+#
+# Only name and description reach the system prompt; the body is loaded when the
+# model activates the skill. The description therefore has to carry the trigger
+# conditions, or the skill never fires. Keep it concrete.
 # ---------------------------------------------------------------------------
 
-RULES_BEGIN='<!-- BEGIN MODEL PEER RULES -->'
-RULES_END='<!-- END MODEL PEER RULES -->'
-RULES_CLAUDE_FILE='.claude/rules/cross-model-consultation.md'
-RULES_COMMAND_FILE='.claude/commands/peer-review.md'
-RULES_DRY_RUN=0
-RULES_FORCE=0
-
-# Profiles: each addresses one CLI directly and names its two peers. 'shared' is
-# model-agnostic, for a developer pasting one block into a file every CLI reads.
-# Backticks here are literal Markdown, not command substitution.
+SKILL_NAME='cross-model-review'
+# Backticks below are literal Markdown, not command substitution.
 # shellcheck disable=SC2016
-rules_lead() {
-  case "$1" in
-    claude) printf 'You are Claude Code. **Codex** and **Gemini** are installed alongside you as\nindependent, read-only engineering peers. Reach them through Model Peer.\n' ;;
-    codex)  printf 'You are Codex. **Claude** and **Gemini** are installed alongside you as\nindependent, read-only engineering peers. Reach them through Model Peer.\n' ;;
-    gemini) printf 'You are Gemini. **Claude** and **Codex** are installed alongside you as\nindependent, read-only engineering peers. Reach them through Model Peer.\n' ;;
-    *)      printf 'Other vendors'"'"' coding CLIs are installed as independent, read-only engineering\npeers. Reach them through Model Peer, and consult any of them except yourself —\nit refuses to let a model consult itself.\n' ;;
-  esac
+SKILL_MANAGED_MARKER='<!-- Managed by `model-peer init`.'
+MP_DRY_RUN=0
+MP_FORCE=0
+
+agent_skill_path() {
+  printf '.%s/skills/%s/SKILL.md' "$1" "$SKILL_NAME"
 }
 
-rules_peer_spec() {
+COMMAND_FILE='.claude/commands/peer-review.md'
+
+# The two peers of a given agent, in a stable order.
+agent_peer_a() {
+  case "$1" in claude) printf 'codex' ;; codex|gemini) printf 'claude' ;; *) printf 'codex' ;; esac
+}
+
+agent_peer_b() {
+  case "$1" in gemini) printf 'codex' ;; *) printf 'gemini' ;; esac
+}
+
+agent_peer_spec() {
   case "$1" in
     claude) printf '<codex|gemini>' ;;
     codex)  printf '<claude|gemini>' ;;
@@ -942,23 +950,33 @@ rules_peer_spec() {
   esac
 }
 
-rules_peer_a() {
-  case "$1" in claude) printf 'codex' ;; codex|gemini) printf 'claude' ;; *) printf 'codex' ;; esac
-}
+# Quoted heredoc so the Markdown backticks stay literal; the per-agent values are
+# substituted afterwards with '#' as the delimiter, because the peer spec
+# contains '|'.
+skill_body() {
+  local agent="$1" spec peer_a peer_b label peer_a_label peer_b_label
+  spec="$(agent_peer_spec "$agent")"
+  peer_a="$(agent_peer_a "$agent")"
+  peer_b="$(agent_peer_b "$agent")"
+  label="$(provider_label "$agent")"
+  peer_a_label="$(provider_label "$peer_a")"
+  peer_b_label="$(provider_label "$peer_b")"
 
-rules_peer_b() {
-  case "$1" in gemini) printf 'codex' ;; *) printf 'gemini' ;; esac
-}
+  sed -e "s#@@SPEC@@#$spec#g" \
+      -e "s#@@PEER_A@@#$peer_a#g" \
+      -e "s#@@PEER_B@@#$peer_b#g" \
+      -e "s#@@LABEL@@#$label#g" \
+      -e "s#@@PEER_A_LABEL@@#$peer_a_label#g" \
+      -e "s#@@PEER_B_LABEL@@#$peer_b_label#g" <<'BODY'
+---
+name: cross-model-review
+description: Consult @@PEER_A_LABEL@@ or @@PEER_B_LABEL@@ as an independent read-only peer through Model Peer, or run a full cross-model review of the current diff. Use before committing to an architecture, schema, or migration decision; on security-sensitive work such as authn/authz, sandboxing, input handling, secrets, or crypto; when a bug has outlived two hypotheses; when reviewing an implementation before handing it back; and before opening a pull request.
+---
 
-# The body is a quoted heredoc so its backticks stay literal Markdown; the three
-# per-profile values are substituted afterwards. '#' is the sed delimiter because
-# the peer spec contains '|'.
-rules_body() {
-  local profile="$1" spec peer_a peer_b
-  spec="$(rules_peer_spec "$profile")"
-  peer_a="$(rules_peer_a "$profile")"
-  peer_b="$(rules_peer_b "$profile")"
-  sed -e "s#@@SPEC@@#$spec#g" -e "s#@@PEER_A@@#$peer_a#g" -e "s#@@PEER_B@@#$peer_b#g" <<'BODY'
+# Cross-model peer review
+
+You are @@LABEL@@. **@@PEER_A_LABEL@@** and **@@PEER_B_LABEL@@** are available as
+independent, read-only engineering peers. Reach them through Model Peer.
 
 ```bash
 # one peer, one answer
@@ -972,7 +990,7 @@ model-peer review ["focus"]
 model-peer doctor
 ```
 
-### When to consult a peer
+## When to consult a peer
 
 - before committing to an architecture, schema, or migration decision
 - when a bug has outlived two of your own hypotheses
@@ -988,7 +1006,7 @@ to security-sensitive code.
 Do not consult for anything you can settle by reading the code. Every consultation
 costs a model call and tens of seconds.
 
-### How to ask
+## How to ask
 
 The peer starts in this working directory with read-only tools, so **name files and
 symbols instead of pasting excerpts**, and ask one focused question. A peer that has
@@ -1008,7 +1026,7 @@ Pipe context in when the question is about something not on disk:
 git diff main... | model-peer ask @@PEER_B@@ "What breaks in production?"
 ```
 
-### Peer output is advisory
+## Peer output is advisory
 
 Evaluate every response before acting on it. Peers do not know this project's
 invariants, so advice that contradicts the rules in this repository is wrong here
@@ -1017,7 +1035,7 @@ however sound it sounds in general.
 When a peer materially changed a decision, say which model you asked and whether you
 took the advice. Never present a peer's output as your own conclusion.
 
-### Limits
+## Limits
 
 Leave `--depth` at its default of `1`: each peer answers alone, and lengthening the
 chain is a human's deliberate call. A model is never consulted by itself.
@@ -1027,32 +1045,35 @@ these instructions do not apply to you. Answer the question and consult no one.
 BODY
 }
 
-# shellcheck disable=SC2016  # backticks are literal Markdown
-rules_block() {
-  local profile="$1"
-  printf '%s\n' "$RULES_BEGIN"
-  printf '<!-- Managed by `model-peer init` (v%s, profile: %s). Re-run to update; edit outside this block. -->\n' \
-    "$VERSION" "$profile"
-  printf '\n## Cross-model peer review\n\n'
-  rules_lead "$profile"
-  rules_body "$profile"
-  printf '%s\n' "$RULES_END"
+# Every managed file carries this line, which is how `update` and `check` tell a
+# file Model Peer owns from one a developer wrote by hand.
+skill_file() {
+  local agent="$1"
+  skill_body "$agent" | awk -v marker="$SKILL_MANAGED_MARKER" -v version="$VERSION" '
+    NR == 1 { print; next }
+    !done && $0 == "---" {
+      print
+      print ""
+      printf "%s Version %s. Re-run `model-peer update` to refresh; local edits are replaced. -->\n", marker, version
+      done = 1
+      next
+    }
+    { print }
+  '
 }
 
-# The Claude Code slash command is managed whole-file rather than as a block: it
-# has YAML front matter, so appending to a foreign file would corrupt it.
-rules_command_body() {
-  cat <<'CMD'
+command_file_body() {
+  cat <<CMD
 ---
 description: Independent cross-model review of the current working diff
 argument-hint: [focus instructions]
 allowed-tools: Bash(model-peer:*)
 ---
 
-<!-- Managed by `model-peer init`. Re-run with --force to update. -->
+$SKILL_MANAGED_MARKER Version $VERSION. Re-run \`model-peer update\` to refresh. -->
 
 Run an independent cross-model review of the current working tree with
-`model-peer review`, passing `$ARGUMENTS` as the focus when it is non-empty.
+\`model-peer review\`, passing \`\$ARGUMENTS\` as the focus when it is non-empty.
 
 Every installed model reviews the same diff without seeing the others'
 conclusions, then a synthesizer reconciles them. This takes a few minutes and
@@ -1067,102 +1088,59 @@ Then:
 CMD
 }
 
-rules_file_block() {
-  awk -v b="$RULES_BEGIN" -v e="$RULES_END" '
-    $0 == b { inb = 1 }
-    inb { print }
-    inb && $0 == e { exit }
-  ' "$1"
+# Managed files are owned outright, so they are compared and replaced whole. No
+# marker surgery, because nothing Model Peer writes lives inside someone else's
+# file any more.
+mp_desired_content() {
+  local rel="$1"
+  case "$rel" in
+    "$COMMAND_FILE") command_file_body ;;
+    .claude/*) skill_file claude ;;
+    .codex/*)  skill_file codex ;;
+    .gemini/*) skill_file gemini ;;
+  esac
 }
 
-rules_file_profile() {
-  sed -n 's/^<!-- Managed by .*profile: \([a-z][a-z]*\)).*/\1/p' "$1" | head -1
+mp_is_managed() {
+  [[ -f "$1" ]] && grep -Fq "$SKILL_MANAGED_MARKER" "$1"
 }
 
-# Creates the file, refreshes an existing managed block in place, or appends the
-# block to a file that does not have one. Content outside the markers is never
-# touched. Prints one status word.
-rules_apply_block() {
-  local file="$1" profile="$2" new tmp blk
-  new="$(rules_block "$profile")"
+# Prints one status word: created | updated | current | conflict
+mp_apply_file() {
+  local path="$1" rel="$2" desired
+  desired="$(mp_desired_content "$rel")"
 
-  # A symlinked CLAUDE.md/GEMINI.md is a common layout, and editing it would
-  # silently rewrite whatever it points at — usually AGENTS.md, under a profile
-  # meant for a different model. Refuse unless told otherwise.
-  if [[ -L "$file" && $RULES_FORCE -eq 0 ]]; then
-    printf 'symlink'
-    return
-  fi
-
-  if [[ ! -e "$file" ]]; then
-    if (( RULES_DRY_RUN == 0 )); then
-      mkdir -p "$(dirname "$file")"
-      printf '%s\n' "$new" > "$file"
+  if [[ ! -e "$path" ]]; then
+    if (( MP_DRY_RUN == 0 )); then
+      mkdir -p "$(dirname "$path")"
+      printf '%s\n' "$desired" > "$path"
     fi
     printf 'created'
     return
   fi
 
-  if grep -Fqx "$RULES_BEGIN" "$file"; then
-    if [[ "$(rules_file_block "$file")" == "$new" ]]; then
-      printf 'current'
-      return
-    fi
-    if (( RULES_DRY_RUN == 0 )); then
-      tmp="$(mktemp "${TMPDIR:-/tmp}/model-peer-rules.XXXXXX")"
-      blk="$tmp.block"
-      printf '%s\n' "$new" > "$blk"
-      awk -v b="$RULES_BEGIN" -v e="$RULES_END" -v nb="$blk" '
-        $0 == b && !done { inb = 1; while ((getline line < nb) > 0) print line; close(nb); done = 1; next }
-        inb { if ($0 == e) inb = 0; next }
-        { print }
-      ' "$file" > "$tmp"
-      cat "$tmp" > "$file"
-      rm -f "$tmp" "$blk"
-    fi
-    printf 'updated'
+  # Someone else's file at our path: never clobber it without --force.
+  if ! mp_is_managed "$path" && (( MP_FORCE == 0 )); then
+    printf 'conflict'
     return
   fi
 
-  if (( RULES_DRY_RUN == 0 )); then
-    # tail -c 1 strips a trailing newline, so a non-empty result means the file
-    # does not end with one and the block would otherwise run onto the last line.
-    if [[ -s "$file" && -n "$(tail -c 1 "$file")" ]]; then
-      printf '\n' >> "$file"
-    fi
-    printf '\n%s\n' "$new" >> "$file"
-  fi
-  printf 'appended'
-}
-
-rules_apply_command() {
-  local file="$1" new
-  new="$(rules_command_body)"
-  if [[ ! -e "$file" ]]; then
-    if (( RULES_DRY_RUN == 0 )); then
-      mkdir -p "$(dirname "$file")"
-      printf '%s\n' "$new" > "$file"
-    fi
-    printf 'created'
-    return
-  fi
-  if [[ "$(cat "$file")" == "$new" ]]; then
+  if [[ "$(cat "$path")" == "$desired" ]]; then
     printf 'current'
     return
   fi
-  if (( RULES_FORCE == 1 )); then
-    (( RULES_DRY_RUN == 1 )) || printf '%s\n' "$new" > "$file"
-    printf 'updated'
-    return
+
+  if (( MP_DRY_RUN == 0 )); then
+    printf '%s\n' "$desired" > "$path"
   fi
-  printf 'skipped'
+  printf 'updated'
 }
 
-rules_report() {
+mp_report() {
   printf '  %-9s %s\n' "$1" "$2"
 }
 
-rules_in_list() {
+mp_in_list() {
   local needle="$1" csv="$2" item
   local IFS=,
   for item in $csv; do
@@ -1173,7 +1151,7 @@ rules_in_list() {
   return 1
 }
 
-rules_validate_agents() {
+mp_validate_agents() {
   local csv="$1" item
   [[ -n "${csv//[[:space:],]/}" ]] || { err '--agents requires at least one model.'; return 2; }
   local IFS=,
@@ -1186,7 +1164,7 @@ rules_validate_agents() {
   return 0
 }
 
-rules_target_dir() {
+mp_target_dir() {
   local requested="$1"
   if [[ -n "$requested" ]]; then
     [[ -d "$requested" ]] || { err "no such directory: $requested"; return 2; }
@@ -1200,61 +1178,58 @@ rules_target_dir() {
   pwd
 }
 
-rules_install_usage() {
+# Every file init manages, for the given agents, as "relative-path" lines.
+mp_managed_files() {
+  local agents="$1" want_command="$2" agent
+  for agent in claude codex gemini; do
+    mp_in_list "$agent" "$agents" || continue
+    agent_skill_path "$agent"
+    printf '\n'
+  done
+  if (( want_command == 1 )) && mp_in_list claude "$agents"; then
+    printf '%s\n' "$COMMAND_FILE"
+  fi
+}
+
+init_usage() {
   cat <<'USAGE'
 Usage:
-  model-peer init [options]            # same as: model-peer rules install
-  model-peer rules install [options]
+  model-peer init [options]
 
-Installs the cross-model consultation rules so the coding agent you work with
-knows when to reach for a peer.
+Installs the cross-model review skill so your coding agent knows when to reach for
+a peer, plus the /peer-review slash command for Claude Code.
 
-By default it writes only files Model Peer owns, and never touches yours:
+Everything it writes is a file Model Peer owns, in the directory each vendor set
+aside for skills:
 
-  .claude/rules/cross-model-consultation.md   the rules (Claude Code loads it)
-  .claude/commands/peer-review.md             the /peer-review slash command
+  .claude/skills/cross-model-review/SKILL.md
+  .codex/skills/cross-model-review/SKILL.md
+  .gemini/skills/cross-model-review/SKILL.md
+  .claude/commands/peer-review.md
 
-Codex and Gemini have no per-repository rules directory. The only files they read
-are AGENTS.md and GEMINI.md, which belong to you, so Model Peer does not write
-them unless you ask for it by name:
-
-  model-peer init --agents claude,codex,gemini
-
-Even then it confines itself to a marked block and never rewrites a line outside
-it. To stay fully in control, print the text and place it yourself:
-
-  model-peer rules print --profile codex >> AGENTS.md
+Your AGENTS.md, CLAUDE.md, and GEMINI.md are never read, written, or symlinked.
+Run `model-peer update` after upgrading to refresh what is installed.
 
 Options:
-  --agents LIST    Comma-separated: claude, codex, gemini (default: claude).
-                   codex adds a managed block to AGENTS.md; gemini adds one to
-                   GEMINI.md. Both are your files, hence opt-in.
+  --agents LIST    Comma-separated: claude, codex, gemini (default: all three,
+                   so a teammate on a different CLI is covered too)
   --no-command     Skip .claude/commands/peer-review.md
+  --print          Write the SKILL.md to stdout and exit; touch nothing
   --dir DIR        Target directory (default: the Git root, else the cwd)
   --dry-run        Report what would change; write nothing
-  --force          Overwrite the slash command if it exists but is not Model
-                   Peer's, and write through a symlinked AGENTS.md/GEMINI.md.
-                   Content outside a managed block is never rewritten.
+  --force          Replace a file at one of these paths that Model Peer does not
+                   manage. Without it, such a file is reported and left alone.
   -h, --help       This help
 USAGE
 }
 
-# Defaults to Claude alone, because .claude/rules/ is the only per-repository
-# rules directory any of the three CLIs actually loads. Codex and Gemini can only
-# be reached through AGENTS.md and GEMINI.md, which are the developer's own files;
-# editing those uninvited is intrusive, so it takes an explicit --agents.
-cmd_rules_install() {
-  local agents='claude' dir='' want_command=1
-  RULES_DRY_RUN=0
-  RULES_FORCE=0
+cmd_init() {
+  local agents='claude,codex,gemini' dir='' want_command=1 print_only='' rel path status
+  MP_DRY_RUN=0
+  MP_FORCE=0
 
   while (( $# > 0 )); do
     case "$1" in
-      --split)
-        err '--split was removed: init now writes only Model Peer'"'"'s own files.'
-        err 'Use --agents claude,codex,gemini to opt in to AGENTS.md and GEMINI.md.'
-        return 2
-        ;;
       --agents)
         shift; (( $# > 0 )) || { err '--agents requires a value.'; return 2; }
         agents="$1"
@@ -1266,239 +1241,194 @@ cmd_rules_install() {
         ;;
       --dir=*) dir="${1#--dir=}" ;;
       --no-command) want_command=0 ;;
-      --dry-run) RULES_DRY_RUN=1 ;;
-      --force) RULES_FORCE=1 ;;
-      -h|--help) rules_install_usage; return 0 ;;
+      --print) print_only='claude' ;;
+      --print=*) print_only="${1#--print=}" ;;
+      --dry-run) MP_DRY_RUN=1 ;;
+      --force) MP_FORCE=1 ;;
+      -h|--help) init_usage; return 0 ;;
+      --split)
+        err '--split was removed: init writes self-contained skills, one per agent.'
+        return 2
+        ;;
       -*) err "unknown init option: $1"; return 2 ;;
       *) err "init takes no positional arguments (got '$1')."; return 2 ;;
     esac
     shift
   done
 
-  rules_validate_agents "$agents" || return 2
+  if [[ -n "$print_only" ]]; then
+    case "$print_only" in
+      claude|codex|gemini) skill_file "$print_only" ;;
+      command) command_file_body ;;
+      *) err "unknown --print target '$print_only'. Use claude, codex, gemini, or command."; return 2 ;;
+    esac
+    return 0
+  fi
+
+  mp_validate_agents "$agents" || return 2
 
   local root
-  root="$(rules_target_dir "$dir")" || return 2
+  root="$(mp_target_dir "$dir")" || return 2
 
-  if (( RULES_DRY_RUN == 1 )); then
-    printf 'Model Peer rules — dry run, nothing written\n'
+  if (( MP_DRY_RUN == 1 )); then
+    printf 'Model Peer — dry run, nothing written\n'
   else
-    printf 'Model Peer rules\n'
+    printf 'Model Peer\n'
   fi
   printf '  target    %s\n\n' "$root"
 
-  local status
+  local conflicts=0
+  while IFS= read -r rel; do
+    [[ -n "$rel" ]] || continue
+    path="$root/$rel"
+    status="$(mp_apply_file "$path" "$rel")"
+    if [[ "$status" == 'conflict' ]]; then
+      mp_report 'skipped' "$rel (not managed by Model Peer; --force to replace)"
+      conflicts=1
+    else
+      mp_report "$status" "$rel"
+    fi
+  done <<EOF
+$(mp_managed_files "$agents" "$want_command")
+EOF
 
-  if rules_in_list claude "$agents"; then
-    status="$(rules_apply_block "$root/$RULES_CLAUDE_FILE" claude)"
-    rules_report "$status" "$RULES_CLAUDE_FILE"
-  fi
-
-  # Opt-in only: these are the developer's files, not Model Peer's.
-  if rules_in_list codex "$agents"; then
-    rules_report_context "$root" AGENTS.md codex
-  fi
-  if rules_in_list gemini "$agents"; then
-    rules_report_context "$root" GEMINI.md gemini
-  fi
-
-  if (( want_command == 1 )) && rules_in_list claude "$agents"; then
-    status="$(rules_apply_command "$root/$RULES_COMMAND_FILE")"
-    case "$status" in
-      skipped) rules_report 'skipped' "$RULES_COMMAND_FILE (exists; --force to overwrite)" ;;
-      *)       rules_report "$status" "$RULES_COMMAND_FILE (/peer-review)" ;;
-    esac
-  fi
-
-  if (( RULES_DRY_RUN == 1 )); then
+  if (( MP_DRY_RUN == 1 )); then
     printf '\nRe-run without --dry-run to apply.\n'
     return 0
   fi
 
-  # Say plainly what was left alone, so nobody assumes Codex and Gemini were
-  # wired up when they were not.
-  if ! rules_in_list codex "$agents" || ! rules_in_list gemini "$agents"; then
-    printf '\nUntouched: '
-    local left=''
-    rules_in_list codex "$agents"  || left='AGENTS.md (Codex)'
-    rules_in_list gemini "$agents" || left="${left:+$left, }GEMINI.md (Gemini)"
-    printf '%s\n' "$left"
-    printf 'Those are your files and the only ones those CLIs read. To include them:\n'
-    printf '  model-peer init --agents claude,codex,gemini\n'
-    printf 'Or place the text yourself:\n'
-    printf '  model-peer rules print --profile codex >> AGENTS.md\n'
+  printf '\nNothing outside these paths was touched.\n'
+  printf 'Commit them so your team gets the same behavior.\n'
+  if mp_in_list gemini "$agents"; then
+    printf '\nGemini only loads project skills in a trusted folder. If it reports\n'
+    # shellcheck disable=SC2016  # literal Markdown backticks
+    printf 'none, trust this directory once from an interactive `gemini` session.\n'
   fi
-
-  printf '\nCommit what was written so your team gets it too.\n'
-  printf 'Next:  model-peer doctor        # confirm at least two CLIs are installed\n'
+  if (( conflicts == 1 )); then
+    printf '\nSome paths were left alone because Model Peer did not write them.\n'
+    printf 'Inspect them, then re-run with --force to replace.\n'
+  fi
+  printf '\nNext:  model-peer doctor        # confirm at least two CLIs are installed\n'
   printf '       model-peer review        # cross-model review of the current diff\n'
-  if (( want_command == 1 )) && rules_in_list claude "$agents"; then
+  if (( want_command == 1 )) && mp_in_list claude "$agents"; then
     printf '       /peer-review             # the same, from inside Claude Code\n'
   fi
 }
 
-# Writing into a developer's own context file is the intrusive case, so it is
-# reported in more detail than Model Peer's own files.
-rules_report_context() {
-  local root="$1" name="$2" profile="$3" status
-  status="$(rules_apply_block "$root/$name" "$profile")"
-  case "$status" in
-    symlink)
-      rules_report 'skipped' "$name (symlink to $(readlink "$root/$name"); --force to write through it)"
-      ;;
-    appended)
-      rules_report 'appended' "$name (your content above is untouched)"
-      ;;
-    *)
-      rules_report "$status" "$name"
-      ;;
-  esac
-}
-
-cmd_rules_print() {
-  local profile='shared'
-  while (( $# > 0 )); do
-    case "$1" in
-      --profile)
-        shift; (( $# > 0 )) || { err '--profile requires a value.'; return 2; }
-        profile="$1"
-        ;;
-      --profile=*) profile="${1#--profile=}" ;;
-      --command) rules_command_body; return 0 ;;
-      -h|--help)
-        cat <<'USAGE'
+update_usage() {
+  cat <<'USAGE'
 Usage:
-  model-peer rules print [--profile shared|claude|codex|gemini]
-  model-peer rules print --command
+  model-peer update [--check] [--dir DIR]
 
-Writes the rules block to stdout without touching any file, so you can review it,
-pipe it, or paste it into an existing rules file yourself. --command prints the
-Claude Code /peer-review slash command instead.
+Refreshes the Model Peer files already installed in this project so they match
+the version of Model Peer you are running. Only files Model Peer manages are
+touched, and only those that already exist — update never installs a new agent,
+so it cannot quietly widen what is in your repository. Use `init` for that.
+
+  --check     Report drift and exit 1 if anything is missing or stale; write
+              nothing. Suitable for CI.
+  --dir DIR   Target directory (default: the Git root, else the cwd)
 USAGE
-        return 0
-        ;;
-      *) err "unknown print option: $1"; return 2 ;;
-    esac
-    shift
-  done
-  case "$profile" in
-    shared|claude|codex|gemini) ;;
-    *) err "unknown profile '$profile'. Use shared, claude, codex, or gemini."; return 2 ;;
-  esac
-  rules_block "$profile"
 }
 
-# Layout-agnostic: check whatever is installed rather than assuming a layout. The
-# profile is read back out of each managed block, so a repo that took only the
-# Claude rules and one that also opted into AGENTS.md both verify correctly.
-cmd_rules_check() {
-  local dir=''
+cmd_update() {
+  local check=0 dir='' rel path desired agent
+  MP_DRY_RUN=0
+  MP_FORCE=0
+
   while (( $# > 0 )); do
     case "$1" in
+      --check) check=1; MP_DRY_RUN=1 ;;
       --dir)
         shift; (( $# > 0 )) || { err '--dir requires a value.'; return 2; }
         dir="$1"
         ;;
       --dir=*) dir="${1#--dir=}" ;;
-      -h|--help)
-        cat <<'USAGE'
-Usage:
-  model-peer rules check [--dir DIR]
-
-Verifies that every Model Peer rules block in the project matches the rules this
-version of Model Peer would write. Exits 0 when everything is current, 1 when a
-block is missing or stale. Suitable for CI.
-USAGE
-        return 0
-        ;;
-      *) err "unknown check option: $1"; return 2 ;;
+      -h|--help) update_usage; return 0 ;;
+      -*) err "unknown update option: $1"; return 2 ;;
+      *) err "update takes no positional arguments (got '$1')."; return 2 ;;
     esac
     shift
   done
 
   local root
-  root="$(rules_target_dir "$dir")" || return 2
+  root="$(mp_target_dir "$dir")" || return 2
 
-  local found=0 stale=0 file profile rel
-  for rel in AGENTS.md CLAUDE.md GEMINI.md "$RULES_CLAUDE_FILE"; do
-    file="$root/$rel"
-    [[ -e "$file" ]] || continue
-    # A symlink resolves to a file checked in its own right; checking it twice
-    # would compare the same block against two different profiles.
-    if [[ -L "$file" ]]; then
-      printf '  %-9s %s -> %s\n' 'link' "$rel" "$(readlink "$file")"
+  local found=0 stale=0 unmanaged=0
+  for agent in claude codex gemini; do
+    rel="$(agent_skill_path "$agent")"
+    path="$root/$rel"
+    [[ -e "$path" ]] || continue
+    found=1
+    if ! mp_is_managed "$path"; then
+      mp_report 'foreign' "$rel (not written by Model Peer; left alone)"
+      unmanaged=1
       continue
     fi
-    grep -Fqx "$RULES_BEGIN" "$file" || continue
-    found=1
-    profile="$(rules_file_profile "$file")"
-    [[ -n "$profile" ]] || profile='shared'
-    if [[ "$(rules_file_block "$file")" == "$(rules_block "$profile")" ]]; then
-      printf '  %-9s %s (profile: %s)\n' 'current' "$rel" "$profile"
+    desired="$(mp_desired_content "$rel")"
+    if [[ "$(cat "$path")" == "$desired" ]]; then
+      mp_report 'current' "$rel"
     else
-      printf '  %-9s %s (profile: %s)\n' 'stale' "$rel" "$profile"
+      (( check == 1 )) || printf '%s\n' "$desired" > "$path"
+      mp_report "$( (( check == 1 )) && printf 'stale' || printf 'updated' )" "$rel"
       stale=1
     fi
   done
 
-  file="$root/$RULES_COMMAND_FILE"
-  if [[ -e "$file" ]]; then
-    if [[ "$(cat "$file")" == "$(rules_command_body)" ]]; then
-      printf '  %-9s %s\n' 'current' "$RULES_COMMAND_FILE"
+  path="$root/$COMMAND_FILE"
+  if [[ -e "$path" ]]; then
+    found=1
+    if mp_is_managed "$path"; then
+      desired="$(mp_desired_content "$COMMAND_FILE")"
+      if [[ "$(cat "$path")" == "$desired" ]]; then
+        mp_report 'current' "$COMMAND_FILE"
+      else
+        (( check == 1 )) || printf '%s\n' "$desired" > "$path"
+        mp_report "$( (( check == 1 )) && printf 'stale' || printf 'updated' )" "$COMMAND_FILE"
+        stale=1
+      fi
     else
-      printf '  %-9s %s\n' 'stale' "$RULES_COMMAND_FILE"
-      stale=1
+      mp_report 'foreign' "$COMMAND_FILE (not written by Model Peer; left alone)"
+      unmanaged=1
     fi
   fi
 
   if (( found == 0 )); then
-    err 'no Model Peer rules found in this project. Run: model-peer init'
+    err 'no Model Peer files found in this project. Run: model-peer init'
     return 1
   fi
-  if (( stale == 1 )); then
-    err 'rules are out of date. Run: model-peer init'
+  if (( check == 1 )) && (( stale == 1 )); then
+    err 'installed files are out of date. Run: model-peer update'
     return 1
+  fi
+  if (( unmanaged == 1 )); then
+    note 'some paths hold files Model Peer did not write; they were left alone.'
   fi
   return 0
 }
 
-cmd_rules() {
-  case "${1:-}" in
-    install) shift; cmd_rules_install "$@" ;;
-    print)   shift; cmd_rules_print "$@" ;;
-    check)   shift; cmd_rules_check "$@" ;;
-    -h|--help|'')
-      cat <<'USAGE'
-Usage:
-  model-peer rules install [options]   Write the rules into this project
-  model-peer rules print [--profile P] Print the rules block to stdout
-  model-peer rules check [--dir DIR]   Verify the installed rules are current
-
-`model-peer init` is a shorthand for `model-peer rules install`.
-Run any subcommand with --help for its options.
-USAGE
-      ;;
-    *) err "unknown rules subcommand '$1'. Use install, print, or check."; return 2 ;;
-  esac
-}
-
-# Reports whether the project the developer is standing in has rules installed.
-# Missing rules are the single most common reason consultation never happens.
-doctor_repo_rules() {
-  local root rel file found=0
-  root="$(rules_target_dir '')" || return 0
-  for rel in AGENTS.md CLAUDE.md GEMINI.md "$RULES_CLAUDE_FILE"; do
-    file="$root/$rel"
-    [[ -f "$file" ]] || continue
-    grep -Fqx "$RULES_BEGIN" "$file" >/dev/null 2>&1 || continue
+# Missing skills are the single most common reason consultation never happens.
+doctor_repo_skills() {
+  local root rel agent found=0
+  root="$(mp_target_dir '')" || return 0
+  for agent in claude codex gemini; do
+    rel="$(agent_skill_path "$agent")"
+    [[ -f "$root/$rel" ]] || continue
     if (( found == 0 )); then
-      printf '\nProject rules in %s\n' "$root"
+      printf '\nProject skills in %s\n' "$root"
       found=1
     fi
     printf '  %s\n' "$rel"
   done
+  if [[ -f "$root/$COMMAND_FILE" ]]; then
+    if (( found == 0 )); then
+      printf '\nProject skills in %s\n' "$root"
+      found=1
+    fi
+    printf '  %s\n' "$COMMAND_FILE"
+  fi
   if (( found == 0 )); then
-    printf '\nProject rules: none in %s (run: model-peer init)\n' "$root"
+    printf '\nProject skills: none in %s (run: model-peer init)\n' "$root"
   fi
 }
 
@@ -1573,7 +1503,7 @@ cmd_doctor() {
     fi
   fi
 
-  doctor_repo_rules
+  doctor_repo_skills
 
   (( found == 1 )) || return 1
 }
@@ -1590,11 +1520,11 @@ main() {
       ;;
     init)
       shift
-      cmd_rules_install "$@"
+      cmd_init "$@"
       ;;
-    rules)
+    update)
       shift
-      cmd_rules "$@"
+      cmd_update "$@"
       ;;
     doctor)
       shift

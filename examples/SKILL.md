@@ -1,15 +1,18 @@
-<!-- BEGIN MODEL PEER RULES -->
-<!-- Managed by `model-peer init` (v0.4.0, profile: shared). Re-run to update; edit outside this block. -->
+---
+name: cross-model-review
+description: Consult Codex or Gemini as an independent read-only peer through Model Peer, or run a full cross-model review of the current diff. Use before committing to an architecture, schema, or migration decision; on security-sensitive work such as authn/authz, sandboxing, input handling, secrets, or crypto; when a bug has outlived two hypotheses; when reviewing an implementation before handing it back; and before opening a pull request.
+---
 
-## Cross-model peer review
+<!-- Managed by `model-peer init`. Version 0.5.0. Re-run `model-peer update` to refresh; local edits are replaced. -->
 
-Other vendors' coding CLIs are installed as independent, read-only engineering
-peers. Reach them through Model Peer, and consult any of them except yourself —
-it refuses to let a model consult itself.
+# Cross-model peer review
+
+You are Claude. **Codex** and **Gemini** are available as
+independent, read-only engineering peers. Reach them through Model Peer.
 
 ```bash
 # one peer, one answer
-model-peer ask <claude|codex|gemini> "<focused question>"
+model-peer ask <codex|gemini> "<focused question>"
 
 # every installed model reviews the current diff independently, then one
 # synthesizer reconciles the findings
@@ -19,7 +22,7 @@ model-peer review ["focus"]
 model-peer doctor
 ```
 
-### When to consult a peer
+## When to consult a peer
 
 - before committing to an architecture, schema, or migration decision
 - when a bug has outlived two of your own hypotheses
@@ -35,7 +38,7 @@ to security-sensitive code.
 Do not consult for anything you can settle by reading the code. Every consultation
 costs a model call and tens of seconds.
 
-### How to ask
+## How to ask
 
 The peer starts in this working directory with read-only tools, so **name files and
 symbols instead of pasting excerpts**, and ask one focused question. A peer that has
@@ -55,7 +58,7 @@ Pipe context in when the question is about something not on disk:
 git diff main... | model-peer ask gemini "What breaks in production?"
 ```
 
-### Peer output is advisory
+## Peer output is advisory
 
 Evaluate every response before acting on it. Peers do not know this project's
 invariants, so advice that contradicts the rules in this repository is wrong here
@@ -64,11 +67,10 @@ however sound it sounds in general.
 When a peer materially changed a decision, say which model you asked and whether you
 took the advice. Never present a peer's output as your own conclusion.
 
-### Limits
+## Limits
 
 Leave `--depth` at its default of `1`: each peer answers alone, and lengthening the
 chain is a human's deliberate call. A model is never consulted by itself.
 
 If you are reading this **while acting as a peer** in someone else's consultation,
 these instructions do not apply to you. Answer the question and consult no one.
-<!-- END MODEL PEER RULES -->

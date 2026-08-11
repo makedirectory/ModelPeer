@@ -12,13 +12,13 @@ CLIs you choose to use.
 ## One-line install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/makedirectory/ModelPeer/v0.4.0/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/makedirectory/ModelPeer/v0.5.0/install.sh | bash
 ```
 
 Interactive setup, which can offer to install missing CLIs:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/makedirectory/ModelPeer/v0.4.0/install.sh | bash -s -- --setup
+curl -fsSL https://raw.githubusercontent.com/makedirectory/ModelPeer/v0.5.0/install.sh | bash -s -- --setup
 ```
 
 As with any remote shell installer, inspect it before piping it into a shell.
@@ -100,8 +100,8 @@ model-peer doctor
 
 `doctor` reports which CLIs are installed, whether authentication looks available,
 the safety defaults in force, the per-provider nested-consultation matrix, the
-effective peer-chain depth limit, and whether the project you are standing in has
-agent rules installed.
+effective peer-chain depth limit, and which Model Peer skills the project you are
+standing in has installed.
 
 ## Set up a project
 
@@ -113,8 +113,9 @@ cd ~/code/your-project
 model-peer init
 ```
 
-That writes the consultation rules where Claude Code, Codex, and Gemini each read
-them, plus a `/peer-review` slash command for Claude Code. Commit the result and
+That installs a `cross-model-review` agent skill where Claude Code, Codex, and
+Gemini each look for one, plus a `/peer-review` slash command for Claude Code. It
+never touches your `AGENTS.md`, `CLAUDE.md`, or `GEMINI.md`. Commit the result and
 your teammates get it too.
 
 → [In your workflow](workflow)
@@ -126,5 +127,5 @@ your teammates get it too.
 ```
 
 This removes Model Peer commands only. It does not uninstall vendor CLIs, touch
-their credentials or configuration, or remove rules files from your projects —
-those are yours, and are committed to your repositories.
+their credentials or configuration, or remove skills from your projects — those
+are committed to your repositories.

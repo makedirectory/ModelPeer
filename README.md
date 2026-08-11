@@ -55,7 +55,7 @@ git changes --+--> Codex ---+--> synthesis
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/makedirectory/ModelPeer/v0.4.0/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/makedirectory/ModelPeer/v0.5.0/install.sh | bash
 ```
 
 Or clone and run `./install.sh`. As with any remote shell installer, inspect it
@@ -75,41 +75,35 @@ model-peer init
 ```
 
 ```text
-  created   .claude/rules/cross-model-consultation.md
-  created   .claude/commands/peer-review.md (/peer-review)
+  created   .claude/skills/cross-model-review/SKILL.md
+  created   .codex/skills/cross-model-review/SKILL.md
+  created   .gemini/skills/cross-model-review/SKILL.md
+  created   .claude/commands/peer-review.md
 ```
 
-It writes only files Model Peer owns. Your `AGENTS.md`, `CLAUDE.md`, and
-`GEMINI.md` are never touched, and no symlinks are created.
+That is the whole footprint — a self-contained agent skill in the directory each
+vendor set aside for one. **Your `AGENTS.md`, `CLAUDE.md`, and `GEMINI.md` are
+never read, written, or symlinked.**
 
 Now the agent consults a peer on its own — before an architecture decision, on a
 bug that has outlived two hypotheses, on anything security-sensitive — and tells
 you which model it asked and whether it took the advice. In Claude Code you also
 get `/peer-review` for a full cross-model review of the current diff.
 
-Commit those files and your team gets the same behavior.
-
-Claude Code is the only one of the three with a per-repository rules directory,
-so it is the only one wired up automatically. Codex reads `AGENTS.md` and Gemini
-reads `GEMINI.md` — your files — so those are opt-in:
-
-```bash
-model-peer init --agents claude,codex,gemini
-```
-
-Even then it confines itself to a marked block and never rewrites a line outside
-it. Or place the text yourself with `model-peer rules print --profile codex`.
+Commit those files and your team gets the same behavior. After upgrading Model
+Peer, `model-peer update` refreshes them; `model-peer update --check` verifies
+them in CI.
 
 → [In your workflow](https://modelpeer.app/workflow) ·
-[Agent rules](https://modelpeer.app/agent-rules)
+[Agent skills](https://modelpeer.app/agent-rules)
 
 ## Commands
 
 ```bash
 model-peer ask <claude|codex|gemini> "<focused question>"   # consult one peer
 model-peer review ["focus instructions"]                    # cross-model review
-model-peer init                                             # install repo rules
-model-peer rules <install|print|check>                      # manage those rules
+model-peer init                                             # install the skill
+model-peer update [--check]                                 # refresh it
 model-peer doctor                                           # check setup
 ```
 

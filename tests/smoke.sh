@@ -56,7 +56,7 @@ EOF
 chmod +x "$TMP/bin/claude" "$TMP/bin/codex" "$TMP/bin/gemini"
 
 # Basic CLI/version.
-[[ "$(model-peer --version)" == 'model-peer 0.4.0' ]]
+[[ "$(model-peer --version)" == 'model-peer 0.5.0' ]]
 
 # Ask dispatch + safety args + stdin closure.
 printf 'sentinel\n' | model-peer ask codex 'review this' >/dev/null
@@ -335,109 +335,136 @@ rm -rf "$TMP/repo/src" "$TMP/repo/skipme.log" "$TMP/repo/.gitignore"
 
 cd "$ROOT"
 
-# Repo rules installation. `init` must be safe to re-run, must never rewrite
-# content outside its managed block, and must only write paths the vendor CLIs
-# actually load.
-RULES_REPO="$TMP/rules-repo"
-mkdir -p "$RULES_REPO"
-cd "$RULES_REPO"
+# Repo setup. `init` installs a self-contained skill per agent and must never
+# read, write, or symlink a file the developer owns.
+SKILL_REPO="$TMP/skill-repo"
+mkdir -p "$SKILL_REPO"
+cd "$SKILL_REPO"
 git init -q
 
 # --dry-run reports without writing anything.
 model-peer init --dry-run > "$TMP/init-dry.txt"
 grep -Fq 'dry run' "$TMP/init-dry.txt"
-grep -Fq '.claude/rules/cross-model-consultation.md' "$TMP/init-dry.txt"
-[[ ! -e .claude ]]
+grep -Fq '.claude/skills/cross-model-review/SKILL.md' "$TMP/init-dry.txt"
+[[ ! -e .claude && ! -e .codex && ! -e .gemini ]]
 
-# Default layout writes ONLY files Model Peer owns. A developer's AGENTS.md,
-# CLAUDE.md, and GEMINI.md are never created or edited uninvited.
-model-peer init > "$TMP/init-default.txt"
-[[ -f .claude/rules/cross-model-consultation.md ]]
-[[ -f .claude/commands/peer-review.md ]]
-[[ ! -e AGENTS.md ]]
-[[ ! -e CLAUDE.md ]]
-[[ ! -e GEMINI.md ]]
-# No symlinks are ever created.
-[[ ! -L CLAUDE.md && ! -L GEMINI.md ]]
-grep -Fq '<!-- BEGIN MODEL PEER RULES -->' .claude/rules/cross-model-consultation.md
-grep -Fq 'You are Claude Code.' .claude/rules/cross-model-consultation.md
-# A peer that loads this file mid-consultation must be told to stand down.
-grep -Fq 'while acting as a peer' .claude/rules/cross-model-consultation.md
-# Codex and Gemini have no per-repo rules directory; writing one would be inert.
-[[ ! -e .codex ]]
-[[ ! -e .gemini ]]
-# What was deliberately left alone is stated, not left to be assumed.
-grep -Fq 'Untouched:' "$TMP/init-default.txt"
-grep -Fq 'AGENTS.md (Codex)' "$TMP/init-default.txt"
-
-# An existing AGENTS.md is not touched by the default run.
+# A developer's own context files must survive untouched, including a symlink
+# layout, which an earlier version wrote through.
 printf '# House rules\n\nNever commit to main.\n' > AGENTS.md
-cp AGENTS.md "$TMP/agents-untouched.md"
-model-peer init >/dev/null
-cmp "$TMP/agents-untouched.md" AGENTS.md
-
-# Codex and Gemini are reachable only through the developer's own files, so they
-# are opt-in. Naming them adds a managed block and preserves what is already there.
-model-peer init --agents claude,codex,gemini >/dev/null
-grep -Fq 'Never commit to main.' AGENTS.md
-grep -Fq 'You are Codex.' AGENTS.md
-[[ -f GEMINI.md ]]
-grep -Fq 'You are Gemini.' GEMINI.md
-[[ ! -e CLAUDE.md ]]
-
-# Re-running is idempotent and check passes.
-cp .claude/rules/cross-model-consultation.md "$TMP/rules-first.md"
-model-peer init >/dev/null
-cmp "$TMP/rules-first.md" .claude/rules/cross-model-consultation.md
-model-peer rules check >/dev/null
-
-# A stale block is detected and repaired without touching the rest of the file.
-printf '\n# Local notes\n\nKeep these.\n' >> .claude/rules/cross-model-consultation.md
-sed 's/outlived two of your own/outlived one of your own/' .claude/rules/cross-model-consultation.md \
-  > "$TMP/tampered" && cat "$TMP/tampered" > .claude/rules/cross-model-consultation.md
-if model-peer rules check >/dev/null 2>&1; then
-  echo 'expected rules check to fail on a stale block' >&2; exit 1
-else
-  [[ $? -eq 1 ]]
-fi
-model-peer init >/dev/null
-model-peer rules check >/dev/null
-grep -Fq '# Local notes' .claude/rules/cross-model-consultation.md
-grep -Fq 'Keep these.' .claude/rules/cross-model-consultation.md
-
-# `rules check` fails in a project that has no rules at all.
-mkdir -p "$TMP/no-rules"
-if model-peer rules check --dir "$TMP/no-rules" >/dev/null 2>&1; then
-  echo 'expected rules check to fail with no rules installed' >&2; exit 1
-else
-  [[ $? -eq 1 ]]
-fi
-
-# A symlinked context file must never be written through: that would silently
-# rewrite whatever it points at, under a profile meant for a different model.
-SYMLINK_REPO="$TMP/symlink-repo"
-mkdir -p "$SYMLINK_REPO"
-cd "$SYMLINK_REPO"
-git init -q
-printf '# Shared\n\nOne file for everyone.\n' > AGENTS.md
+ln -s AGENTS.md CLAUDE.md
 ln -s AGENTS.md GEMINI.md
-model-peer init --agents gemini > "$TMP/init-symlink.txt"
-grep -Fq 'skipped' "$TMP/init-symlink.txt"
-grep -Fq 'symlink to AGENTS.md' "$TMP/init-symlink.txt"
-if grep -Fq 'profile: gemini' AGENTS.md; then
-  echo 'expected the Gemini block not to leak through the symlink into AGENTS.md' >&2; exit 1
-fi
+cp AGENTS.md "$TMP/agents-before.md"
+
+model-peer init > "$TMP/init.txt"
+cmp "$TMP/agents-before.md" AGENTS.md
+[[ "$(readlink CLAUDE.md)" == 'AGENTS.md' ]]
 [[ "$(readlink GEMINI.md)" == 'AGENTS.md' ]]
 
-# --no-command skips the slash command; --agents narrows what is written.
+# One self-contained skill per agent, plus the Claude Code slash command.
+for a in claude codex gemini; do
+  [[ -f ".$a/skills/cross-model-review/SKILL.md" ]]
+done
+[[ -f .claude/commands/peer-review.md ]]
+# No stray markdown in Codex's rules directory: that path holds Starlark .rules
+# files governing command execution, and markdown there is ignored.
+[[ ! -e .codex/rules ]]
+[[ ! -e .gemini/global_rules.md ]]
+
+# Only name and description reach the system prompt before activation, so the
+# description has to carry the trigger conditions or the skill never fires.
+head -5 .codex/skills/cross-model-review/SKILL.md > "$TMP/fm.txt"
+grep -Fq 'name: cross-model-review' "$TMP/fm.txt"
+grep -Fq 'description:' "$TMP/fm.txt"
+grep -Fq 'before opening a pull request' "$TMP/fm.txt"
+# Frontmatter must be the very first line, or the vendors reject the file.
+[[ "$(head -1 .codex/skills/cross-model-review/SKILL.md)" == '---' ]]
+
+# Each skill is addressed to the agent that reads it and names its two peers.
+grep -Fq 'You are Claude.' .claude/skills/cross-model-review/SKILL.md
+grep -Fq 'You are Codex.'  .codex/skills/cross-model-review/SKILL.md
+grep -Fq 'You are Gemini.' .gemini/skills/cross-model-review/SKILL.md
+grep -Fq 'Codex' .claude/skills/cross-model-review/SKILL.md
+if grep -Fq 'You are Claude.' .codex/skills/cross-model-review/SKILL.md; then
+  echo "expected the Codex skill not to address Claude" >&2; exit 1
+fi
+# A peer that activates this skill mid-consultation must be told to stand down.
+grep -Fq 'while acting as a peer' .claude/skills/cross-model-review/SKILL.md
+
+# Re-running is idempotent, and update reports no drift.
+cp .codex/skills/cross-model-review/SKILL.md "$TMP/skill-first.md"
+model-peer init >/dev/null
+cmp "$TMP/skill-first.md" .codex/skills/cross-model-review/SKILL.md
+model-peer update >/dev/null
+model-peer update --check >/dev/null
+
+# `update` refreshes a stale file and `--check` reports drift without writing.
+printf 'LOCAL EDIT\n' >> .gemini/skills/cross-model-review/SKILL.md
+cp .gemini/skills/cross-model-review/SKILL.md "$TMP/tampered.md"
+if model-peer update --check > "$TMP/check.txt" 2>&1; then
+  echo 'expected update --check to fail on a stale file' >&2; exit 1
+else
+  [[ $? -eq 1 ]]
+fi
+grep -Fq 'stale' "$TMP/check.txt"
+# --check must not have written anything.
+cmp "$TMP/tampered.md" .gemini/skills/cross-model-review/SKILL.md
+model-peer update > "$TMP/update.txt"
+grep -Fq 'updated' "$TMP/update.txt"
+model-peer update --check >/dev/null
+if grep -Fq 'LOCAL EDIT' .gemini/skills/cross-model-review/SKILL.md; then
+  echo 'expected update to replace a locally edited managed file' >&2; exit 1
+fi
+
+# `update` never installs an agent that is not already present, so it cannot
+# quietly widen what is in the repository.
+rm -rf .gemini
+model-peer update >/dev/null
+[[ ! -e .gemini ]]
+
+# A file Model Peer did not write is never clobbered without --force.
+FOREIGN="$TMP/foreign-repo"
+mkdir -p "$FOREIGN/.claude/skills/cross-model-review"
+printf 'my own skill\n' > "$FOREIGN/.claude/skills/cross-model-review/SKILL.md"
+model-peer init --dir "$FOREIGN" --agents claude > "$TMP/foreign.txt"
+grep -Fq 'skipped' "$TMP/foreign.txt"
+grep -Fq 'my own skill' "$FOREIGN/.claude/skills/cross-model-review/SKILL.md"
+# update leaves it alone too, rather than adopting it.
+model-peer update --dir "$FOREIGN" > "$TMP/foreign-update.txt" 2>&1
+grep -Fq 'foreign' "$TMP/foreign-update.txt"
+grep -Fq 'my own skill' "$FOREIGN/.claude/skills/cross-model-review/SKILL.md"
+# --force replaces it.
+model-peer init --dir "$FOREIGN" --agents claude --force >/dev/null
+grep -Fq 'name: cross-model-review' "$FOREIGN/.claude/skills/cross-model-review/SKILL.md"
+
+# `update` in a project with nothing installed is an error, not a silent success.
+mkdir -p "$TMP/empty-repo"
+if model-peer update --dir "$TMP/empty-repo" >/dev/null 2>&1; then
+  echo 'expected update to fail with nothing installed' >&2; exit 1
+else
+  [[ $? -eq 1 ]]
+fi
+
+# --agents narrows what is written; --no-command skips the slash command.
 ONE_REPO="$TMP/one-repo"
 mkdir -p "$ONE_REPO"
 cd "$ONE_REPO"
 git init -q
 model-peer init --agents codex --no-command >/dev/null
-[[ -f AGENTS.md ]]
+[[ -f .codex/skills/cross-model-review/SKILL.md ]]
 [[ ! -e .claude ]]
-[[ ! -e GEMINI.md ]]
+[[ ! -e .gemini ]]
+
+# --print writes to stdout and touches nothing.
+PRINT_REPO="$TMP/print-repo"
+mkdir -p "$PRINT_REPO"
+cd "$PRINT_REPO"
+model-peer init --print > "$TMP/print.md"
+grep -Fq 'name: cross-model-review' "$TMP/print.md"
+model-peer init --print=gemini > "$TMP/print-gemini.md"
+grep -Fq 'You are Gemini.' "$TMP/print-gemini.md"
+model-peer init --print=command > "$TMP/print-command.md"
+grep -Fq 'allowed-tools: Bash(model-peer:*)' "$TMP/print-command.md"
+[[ -z "$(ls -A "$PRINT_REPO")" ]]
 
 # --split is gone and says what to do instead.
 if model-peer init --split >/dev/null 2>"$TMP/split.err"; then
@@ -456,31 +483,18 @@ for bad_args in '--agents bogus' 'stray-positional' '--nope'; do
     [[ $? -eq 2 ]]
   fi
 done
-if model-peer rules bogus >/dev/null 2>&1; then
-  echo 'expected an unknown rules subcommand to be rejected' >&2; exit 1
-else
-  [[ $? -eq 2 ]]
-fi
-if model-peer rules print --profile nope >/dev/null 2>&1; then
-  echo 'expected an unknown rules profile to be rejected' >&2; exit 1
+if model-peer update --nope >/dev/null 2>&1; then
+  echo 'expected an unknown update option to be rejected' >&2; exit 1
 else
   [[ $? -eq 2 ]]
 fi
 
-# `rules print` writes to stdout and touches nothing. Redirect rather than piping
-# into `grep -q`: under pipefail, grep exiting on the first match would kill the
-# producer with SIGPIPE and fail the pipeline.
-cd "$TMP/no-rules"
-model-peer rules print > "$TMP/print-shared.md"
-grep -Fq '<!-- BEGIN MODEL PEER RULES -->' "$TMP/print-shared.md"
-model-peer rules print --profile gemini > "$TMP/print-gemini.md"
-grep -Fq 'You are Gemini.' "$TMP/print-gemini.md"
-model-peer rules print --command > "$TMP/print-command.md"
-grep -Fq 'allowed-tools: Bash(model-peer:*)' "$TMP/print-command.md"
-[[ -z "$(ls -A "$TMP/no-rules")" ]]
+# The shipped example must match what init writes, so the docs cannot drift.
+model-peer init --print > "$TMP/example.md"
+diff -u "$TMP/example.md" "$ROOT/examples/SKILL.md"
 
-# The shipped template must match what `init` writes, so the docs cannot drift.
-model-peer rules print | diff -u - "$ROOT/examples/AGENTS.md"
+cd "$ROOT"
+
 
 # Installer must reproduce the repository binaries exactly.
 cd "$ROOT"

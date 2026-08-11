@@ -52,9 +52,9 @@ done
 
 # Both generated copies are rebuilt rather than trusted to the sed above:
 # install.sh embeds bin/model-peer verbatim, and examples/AGENTS.md is the output
-# of `model-peer rules print`, whose managed header carries the version.
+# of `model-peer init --print`, whose managed header carries the version.
 bash tools/sync-installer.sh >/dev/null
-bash bin/model-peer rules print > examples/AGENTS.md
+bash bin/model-peer init --print > examples/SKILL.md
 
 # Sweep the whole tree rather than only the files listed above, so a version
 # pinned in a page nobody remembered to add here still fails the bump. The

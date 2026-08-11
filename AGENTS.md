@@ -60,8 +60,8 @@ copy of `bin/model-peer` inside a `<<'__MODEL_PEER__'` heredoc. **Any change to
 build otherwise, and `tests/smoke.sh` independently installs and `cmp`s the result.
 This is the single easiest way to break the repo.
 
-`examples/AGENTS.md` is the second copy: it is generated from
-`model-peer rules print`, so any change to the rules text needs `make sync` too.
+`examples/SKILL.md` is the second copy: it is generated from
+`model-peer init --print`, so any change to the skill text needs `make sync` too.
 `make check-sync` and `tests/smoke.sh` both diff it.
 
 `bin/ask-claude`, `bin/ask-codex`, `bin/ask-gemini`, and `bin/ai-review` are
@@ -70,8 +70,8 @@ in `install.sh`.
 
 ### Command structure
 
-`bin/model-peer` dispatches from `main` into `cmd_ask`, `cmd_review`,
-`cmd_rules_install`, `cmd_rules`, or `cmd_doctor`. Both consultation paths funnel
+`bin/model-peer` dispatches from `main` into `cmd_ask`, `cmd_review`, `cmd_init`,
+`cmd_update`, or `cmd_doctor`. Both consultation paths funnel
 through `run_provider`, which is the
 single chokepoint that enforces the guards, pushes the chain, and computes the
 depth budget before delegating to `run_claude` / `run_codex` / `run_gemini`. Put
@@ -130,40 +130,51 @@ chain is empty, so each reviewer starts fresh; a review launched from inside a p
 chain inherits that chain and cannot escape the guard. The synthesizer is forced to
 be a leaf by passing it a depth limit of exactly `stack_depth + 1`.
 
-### Repo rules (`init` / `rules`)
+### Repo setup (`init` / `update`)
 
-`model-peer init` writes the consultation rules into a developer's project. The
-rules text lives in `rules_body` as a quoted heredoc with `@@SPEC@@`, `@@PEER_A@@`,
-and `@@PEER_B@@` placeholders substituted afterwards — quoted so the Markdown
-backticks stay literal, substituted with `#` as the sed delimiter because the peer
-spec contains `|`.
+`model-peer init` installs an agent skill so the developer's own coding agent
+knows when to reach for a peer. `model-peer update` refreshes what is installed.
 
-Three invariants:
+Everything written is a file Model Peer owns outright:
 
-1. **Only write paths a vendor CLI actually loads.** Claude Code globs
-   `.claude/rules/**/*.md` and reads `CLAUDE.md`; Codex reads `AGENTS.md` and
-   `AGENTS.override.md`; Gemini reads `GEMINI.md`. Codex and Gemini have no
-   per-repo rules directory — `.codex/rules/*.md` and `.gemini/global_rules.md`
-   are inert, since Codex's extra context filenames come from the global
-   `project_doc_fallback_filenames` key. Verify against the shipping CLI before
-   adding a path.
-2. **Default to Model Peer's own files only.** `.claude/rules/` and
-   `.claude/commands/` are ours to write. `AGENTS.md`, `CLAUDE.md`, and
-   `GEMINI.md` belong to the developer, and `init` touches them only when the
-   matching CLI is named in `--agents`. `CLAUDE.md` is never written at all, and
-   no symlinks are ever created — a tool that rearranges someone's root context
-   files uninvited will not be run twice. If you add a provider whose only
-   reachable path is a file the developer owns, it goes in as opt-in.
-3. **Never rewrite content outside the markers.** Everything between
-   `<!-- BEGIN MODEL PEER RULES -->` and `<!-- END MODEL PEER RULES -->` is
-   Model Peer's; everything else belongs to the developer. A symlinked context
-   file is refused rather than written through, since that would edit the linked
-   file under a profile meant for a different model.
+```text
+.claude/skills/cross-model-review/SKILL.md
+.codex/skills/cross-model-review/SKILL.md
+.gemini/skills/cross-model-review/SKILL.md
+.claude/commands/peer-review.md
+```
 
-The profile (`shared`, `claude`, `codex`, `gemini`) is recorded in the managed
-header comment, which is how `rules check` knows what to compare a file against
-without being told the layout. Changing the header format breaks `check` on every
-already-installed repo.
+Four invariants:
+
+1. **Never touch a file the developer owns.** `AGENTS.md`, `CLAUDE.md`, and
+   `GEMINI.md` are theirs. Model Peer does not read, write, append to, or symlink
+   them. Earlier versions did, and it was the right thing to rip out — a tool that
+   rearranges someone's root context files uninvited does not get run twice.
+   Skills exist precisely so a vendor-supported capability can live *beside* those
+   files instead of inside them.
+2. **Managed files are owned whole.** Because nothing lives inside a foreign file,
+   there is no marker surgery: `mp_apply_file` compares and replaces the entire
+   file. That is what makes `update` tractable. A file at a managed path that
+   Model Peer did not write is detected via `SKILL_MANAGED_MARKER`, reported, and
+   left alone unless `--force`.
+3. **Only write paths a vendor CLI actually loads, verified against the shipping
+   CLI.** All three read `<vendor-dir>/skills/<name>/SKILL.md`. Confirmed live:
+   `gemini skills list` reports it, `codex exec` lists it among its skills, and
+   Claude Code quotes its description from the system prompt. Two traps: Codex's
+   `.codex/rules/` holds Starlark `.rules` files for command permissions, not
+   agent context, so markdown there is inert; and `.agents/skills/` is a
+   Gemini-only alias. Verify before adding a path.
+4. **The description carries the trigger.** Only `name` and `description` reach
+   the system prompt; the body loads on activation. A description that says what
+   the skill *is* rather than *when to use it* means the skill never fires. When
+   editing `skill_body`, keep the trigger conditions in the frontmatter.
+
+`update` deliberately refreshes only what already exists and never installs a new
+agent, so it cannot quietly widen a repository's footprint. `--check` is the CI
+form and writes nothing.
+
+Gemini skips project skills in an untrusted folder, which `init` says out loud
+rather than leaving the developer to discover an empty `gemini skills list`.
 
 ### Orchestration robustness
 
