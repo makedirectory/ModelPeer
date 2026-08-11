@@ -38,8 +38,7 @@ the installer, the pinned `curl` URLs in the docs, and a smoke-test assertion:
 tools/bump-version.sh <major.minor.patch>
 ```
 
-That rewrites every occurrence, regenerates both derived files — `install.sh`'s
-embedded copy and `examples/AGENTS.md` — and then sweeps **every tracked file** for
+That rewrites every occurrence, regenerates `install.sh`'s embedded copy and then sweeps **every tracked file** for
 the old string, failing if one survives. The sweep is deliberately broader than the
 list of files the script rewrites, so a version pinned in a page nobody remembered
 to add still fails the bump rather than shipping stale. `CHANGELOG.md` and the

@@ -54,7 +54,7 @@ again, because participation would no longer require shell access.
 ## Central policy enforcement
 
 Once recursion is brokered centrally, richer policy becomes cheap. Per-model call
-budgets, total consultation budgets, and full cycle detection rather than the
+
 self-consultation check that is possible today:
 
 ```bash
@@ -65,21 +65,22 @@ model-peer review --depth 2 --max-consultations 5 --models claude,codex,gemini
 Maximum depth:          2
 Maximum peer calls:     5
 Maximum calls/model:    2
-Cycle detection:        on
+Cycle detection:        on (already enforced)
 Write access:           never
 Shell access to peers:  never
 ```
 
-Full cycle detection would reject a chain like:
+Cycle detection is **done** as of 0.6.0. A chain like:
 
 ```text
 Claude
  └─ Codex
-     └─ Claude   <- cycle
+     └─ Claude   <- rejected
 ```
 
-which the current self-consultation guard permits, since it only compares against
-the immediately preceding model.
+is refused, because the guard tests membership across the whole chain rather than
+only against the immediately preceding model. What remains for the broker is the
+per-model and total call budgets above.
 
 ## Not planned
 

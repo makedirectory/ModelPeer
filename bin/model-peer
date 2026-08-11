@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="0.5.0"
+VERSION="0.6.0"
 PROGRAM="model-peer"
 
 usage() {
   cat <<'USAGE'
-Model Peer v0.5.0 — cross-model peer review for coding agents.
+Model Peer v0.6.0 — cross-model peer review for coding agents.
 
 Usage:
   model-peer ask claude "<focused question>"
@@ -18,6 +18,7 @@ Usage:
 
   model-peer init [options]            Install the cross-model review skill
   model-peer update [--check]          Refresh installed files to this version
+  model-peer trust [--check]           Let Gemini load this project's skills
   model-peer doctor
   model-peer --version
 
@@ -30,7 +31,6 @@ Review options:
   --models LIST          Comma-separated reviewers (default: all installed)
   --synthesizer MODEL    claude, codex, or gemini (default: first available in
                          claude,codex,gemini order)
-  --depth N              Max peer-chain length for each reviewer, 1-10 (default: 1)
   --timeout S            Per-reviewer timeout in seconds (default: 600, 0 off).
                          A reviewer that times out, fails, or returns nothing is
                          dropped and named; synthesis needs two survivors.
@@ -48,7 +48,7 @@ Init options:
 Peer-chain depth:
   Depth is a limit, never a permission. Depth 1 (default) means a peer answers on
   its own. Depth N lets a chain grow to N models: claude -> codex -> gemini is 3.
-  A model can never be consulted by itself, at any depth.
+  A model can never appear twice in one chain, at any depth.
 
   Nested consultation additionally requires limited outbound execution, which
   Model Peer scopes as narrowly as each provider allows. Where a provider cannot
@@ -69,6 +69,20 @@ USAGE
 }
 
 err() { printf '%s: %s\n' "$PROGRAM" "$*" >&2; }
+
+# Temp paths that must not survive an interrupt. A trap body is evaluated when it
+# fires, by which time a function's `local` is long gone — so these are globals,
+# and the cleanup guards against them being unset.
+MP_TMP_REVIEW=''
+MP_TMP_GEMINI=''
+MP_TMP_SCRATCH=''
+mp_cleanup() {
+  [[ -n "${MP_TMP_REVIEW:-}" ]] && rm -rf "$MP_TMP_REVIEW"
+  [[ -n "${MP_TMP_GEMINI:-}" ]] && rm -rf "$MP_TMP_GEMINI"
+  [[ -n "${MP_TMP_SCRATCH:-}" ]] && rm -f "$MP_TMP_SCRATCH"
+  return 0
+}
+trap mp_cleanup EXIT INT TERM
 note() { printf '%s: %s\n' "$PROGRAM" "$*" >&2; }
 
 provider_label() {
@@ -103,6 +117,22 @@ stack_last() {
   printf '%s' "${stack##*:}"
 }
 
+# Membership across the WHOLE chain, not just its tail. Checking only the tail
+# blocks claude -> claude but permits claude -> codex -> claude, which is still a
+# model reviewing its own work one hop removed — exactly what the guarantee
+# "a model never appears twice in one chain, at any depth" rules out.
+stack_contains() {
+  local provider="$1" stack="${MODEL_PEER_STACK:-}" item
+  [[ -n "$stack" ]] || return 1
+  local IFS=:
+  for item in $stack; do
+    if [[ "$item" == "$provider" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 push_stack() {
   local provider="$1"
   local stack="${MODEL_PEER_STACK:-}"
@@ -112,7 +142,8 @@ push_stack() {
 # Resolve the depth limit from --depth, then MODEL_PEER_MAX_DEPTH, then the default.
 resolve_max_depth() {
   local requested="$1"
-  local depth="${requested:-${MODEL_PEER_MAX_DEPTH:-$DEFAULT_MAX_DEPTH}}"
+  local inherited="${MODEL_PEER_MAX_DEPTH:-}"
+  local depth="${requested:-${inherited:-$DEFAULT_MAX_DEPTH}}"
   [[ "$depth" =~ ^[0-9]+$ ]] || {
     err "depth must be an integer between 1 and $DEPTH_CEILING (got '$depth')."
     return 2
@@ -121,6 +152,15 @@ resolve_max_depth() {
     err "depth must be between 1 and $DEPTH_CEILING (got $depth)."
     return 2
   }
+
+  # Inside a chain the inherited limit is a ceiling, not a default. A peer may
+  # lower it but never raise it, otherwise "the limit propagates down the chain"
+  # is untrue: any peer could pass --depth 10 and buy itself more hops.
+  if [[ -n "${MODEL_PEER_STACK:-}" && -n "$inherited" ]] \
+     && [[ "$inherited" =~ ^[0-9]+$ ]] && (( depth > inherited )); then
+    note "depth $depth exceeds the inherited limit of $inherited; using $inherited."
+    depth="$inherited"
+  fi
   printf '%s' "$depth"
 }
 
@@ -162,14 +202,14 @@ resolve_delegation() {
 }
 
 # Two independent guards: the chain may not exceed the depth limit, and a model
-# may never be consulted by itself. The second holds at every depth.
+# may never appear in it twice. The second holds at every depth.
 check_chain() {
   local provider="$1" max_depth="$2"
   local depth
   depth="$(stack_depth)"
 
-  if [[ "$(stack_last)" == "$provider" ]]; then
-    err "blocked: $(provider_label "$provider") cannot consult itself (chain=${MODEL_PEER_STACK:-empty})."
+  if stack_contains "$provider"; then
+    err "blocked: $(provider_label "$provider") is already in this chain and cannot be consulted again (chain=${MODEL_PEER_STACK:-empty})."
     return 64
   fi
   if (( depth >= max_depth )); then
@@ -287,10 +327,11 @@ consultation_prompt() {
 Do not delegate the decision back to another agent."
     remaining=0
   else
-    delegation_rule="You may consult one further peer with \`model-peer ask <model> \"<question>\"\` if a
-genuinely independent perspective would change your answer. $remaining more level(s) are
-permitted. Consult nothing else: that command is the only execution you are authorized
-to perform. Prefer answering directly, since every hop costs time and dilutes
+    delegation_rule="You may consult one further peer with
+\`model-peer _delegate <model> \"<question>\"\` if a genuinely independent perspective would
+change your answer. $remaining more level(s) are permitted. That command is the only
+execution you are authorized to perform; it inherits every limit already in force and
+accepts no options. Prefer answering directly, since every hop costs time and dilutes
 accountability. If you do consult a peer, say which model you asked and what you took
 from it."
   fi
@@ -330,8 +371,12 @@ run_claude() {
   tools='Read,Glob,Grep'
   local -a nested_args=()
   if [[ "$delegation" == 'namespaced' ]]; then
+    # Scope the grant to the delegate entry point, not to `model-peer` wholesale.
+    # `model-peer` is no longer a read-only executable — `init` and `update` write
+    # files — so `Bash(model-peer:*)` would hand a peer the ability to rewrite the
+    # workspace's skills. The capability must not exceed what the prompt allows.
     tools='Read,Glob,Grep,Bash'
-    nested_args=(--allowedTools 'Bash(model-peer:*)')
+    nested_args=(--allowedTools 'Bash(model-peer _delegate:*)')
   fi
 
   MODEL_PEER_STACK="$stack" MODEL_PEER_MAX_DEPTH="$max_depth" \
@@ -395,6 +440,7 @@ run_gemini() {
   local bridge_prompt tmpdir policy status
   bridge_prompt="$(consultation_prompt Gemini "$prompt" "$remaining" "$delegation")"
   tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/model-peer-gemini.XXXXXX")"
+  MP_TMP_GEMINI="$tmpdir"
   policy="$tmpdir/read-only.toml"
 
   # Plan mode is read-only upstream. These explicit deny rules are a second line
@@ -452,6 +498,7 @@ POLICY
   fi
 
   rm -rf "$tmpdir"
+  MP_TMP_GEMINI=''
   return "$status"
 }
 
@@ -549,6 +596,36 @@ USAGE
     err 'ask requires a prompt argument or piped stdin.'
     return 2
   fi
+  run_provider "$provider" "$max_depth" "$prompt" "$timeout"
+}
+
+# Internal entry point handed to a delegating peer, and the only command such a
+# peer is authorized to run. Deliberately crippled: it takes a provider and a
+# prompt, inherits every limit from the environment, and cannot reach init,
+# update, review, doctor, trust, or --depth. Not advertised in usage because it
+# is a capability boundary, not a user-facing feature.
+cmd_delegate() {
+  local provider="${1:-}" arg
+  (( $# > 0 )) && shift
+  case "$provider" in
+    claude|codex|gemini) ;;
+    *) err 'usage: model-peer _delegate <claude|codex|gemini> "<question>"'; return 2 ;;
+  esac
+  for arg in "$@"; do
+    case "$arg" in
+      -*) err '_delegate accepts no options; limits are inherited.'; return 2 ;;
+    esac
+  done
+
+  local prompt
+  if ! prompt="$(read_prompt "$@")"; then
+    err '_delegate requires a prompt argument or piped stdin.'
+    return 2
+  fi
+
+  local max_depth timeout
+  max_depth="$(resolve_max_depth '')" || return 2
+  timeout="$(resolve_timeout '')" || return 2
   run_provider "$provider" "$max_depth" "$prompt" "$timeout"
 }
 
@@ -697,7 +774,6 @@ PROMPT
 cmd_review() {
   local reviewers="${MODEL_PEER_REVIEWERS:-}"
   local synthesizer="${MODEL_PEER_SYNTHESIZER:-}"
-  local depth_arg=''
   local timeout_arg=''
   local strict=0
   local focus=''
@@ -712,11 +788,13 @@ cmd_review() {
         shift; (( $# > 0 )) || { err '--synthesizer requires a value.'; return 2; }
         synthesizer="$1"
         ;;
-      --depth)
-        shift; (( $# > 0 )) || { err '--depth requires a value.'; return 2; }
-        depth_arg="$1"
+      --depth|--depth=*)
+        err 'review does not take --depth: reviewers are always independent leaves.'
+        err 'A reviewer that consults another model is no longer an independent'
+        err 'observation, which is the entire point of the panel.'
+        err 'Use: model-peer ask <model> --depth N   when you want a chain.'
+        return 2
         ;;
-      --depth=*) depth_arg="${1#--depth=}" ;;
       --timeout)
         shift; (( $# > 0 )) || { err '--timeout requires a value.'; return 2; }
         timeout_arg="$1"
@@ -727,14 +805,15 @@ cmd_review() {
         cat <<'USAGE'
 Usage:
   model-peer review [--models claude,codex,gemini] [--synthesizer MODEL]
-                    [--depth N] [--timeout S] [--strict] ["focus"]
+                    [--timeout S] [--strict] ["focus"]
 
 By default, every installed supported model reviews independently. At least two
 reviewers are required. Claude is preferred for synthesis when installed, then
 Codex, then Gemini. Set MODEL_PEER_REVIEWERS or MODEL_PEER_SYNTHESIZER to change defaults.
 
---depth N (1-10, default 1) caps the chain length for each reviewer. At depth 1 a
-reviewer works alone. The synthesizer is always a leaf and never consults anyone.
+Every reviewer and the synthesizer are leaves: none of them consults another
+model. Three reviewers that can consult each other are not three independent
+observations. Use `model-peer ask --depth N` when you want a chain.
 
 --timeout S (default 600, 0 disables) bounds each reviewer independently, so one
 hung model cannot cost you the whole panel. A reviewer that times out, fails, or
@@ -754,8 +833,10 @@ USAGE
     shift
   done
 
+  # Reviewers are leaves by construction: exactly enough depth to run, none to
+  # spend. This is what keeps the panel independent, so it is not configurable.
   local max_depth timeout
-  max_depth="$(resolve_max_depth "$depth_arg")" || return 2
+  max_depth=$(( $(stack_depth) + 1 ))
   timeout="$(resolve_timeout "$timeout_arg")" || return 2
 
   command -v git >/dev/null 2>&1 || { err "'git' is required for review."; return 127; }
@@ -800,6 +881,9 @@ USAGE
   root="$(git rev-parse --show-toplevel)"
   cd "$root"
   tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/model-peer-review.XXXXXX")"
+  # The context file holds the diff and the contents of untracked files. An
+  # interrupted run must not leave that behind in a world-readable temp dir.
+  MP_TMP_REVIEW="$tmpdir"
   context="$tmpdir/context.txt"
   max_bytes="${MODEL_PEER_MAX_DIFF_BYTES:-500000}"
   [[ "$max_bytes" =~ ^[0-9]+$ ]] || { err 'MODEL_PEER_MAX_DIFF_BYTES must be an integer.'; return 2; }
@@ -879,7 +963,7 @@ USAGE
   # Synthesis is always a leaf: give it exactly enough depth to run and none to
   # spend, so the final report can never be outsourced.
   local synth_depth=$(( $(stack_depth) + 1 ))
-  if run_provider "$synthesizer" "$synth_depth" "$prompt"; then
+  if run_provider "$synthesizer" "$synth_depth" "$prompt" "$timeout"; then
     synth_status=0
   else
     synth_status=$?
@@ -919,7 +1003,12 @@ USAGE
 # conditions, or the skill never fires. Keep it concrete.
 # ---------------------------------------------------------------------------
 
-SKILL_NAME='cross-model-review'
+# Two skills, because the tool does two different things and they fire on
+# different cues. `review` cross-checks a diff across the whole panel; `consult`
+# gets one peer's opinion on one question. Bundling them into a single skill made
+# the description a list of unrelated triggers, which is exactly the shape that
+# stops a skill activating when it should.
+SKILL_NAMES='cross-model-review cross-model-consult'
 # Backticks below are literal Markdown, not command substitution.
 # shellcheck disable=SC2016
 SKILL_MANAGED_MARKER='<!-- Managed by `model-peer init`.'
@@ -927,10 +1016,16 @@ MP_DRY_RUN=0
 MP_FORCE=0
 
 agent_skill_path() {
-  printf '.%s/skills/%s/SKILL.md' "$1" "$SKILL_NAME"
+  printf '.%s/skills/%s/SKILL.md' "$1" "$2"
 }
 
-COMMAND_FILE='.claude/commands/peer-review.md'
+# Slash commands mirror the same split.
+command_path() {
+  case "$1" in
+    cross-model-review)  printf '.claude/commands/peer-review.md' ;;
+    cross-model-consult) printf '.claude/commands/peer-ask.md' ;;
+  esac
+}
 
 # The two peers of a given agent, in a stable order.
 agent_peer_a() {
@@ -953,58 +1048,106 @@ agent_peer_spec() {
 # Quoted heredoc so the Markdown backticks stay literal; the per-agent values are
 # substituted afterwards with '#' as the delimiter, because the peer spec
 # contains '|'.
-skill_body() {
-  local agent="$1" spec peer_a peer_b label peer_a_label peer_b_label
-  spec="$(agent_peer_spec "$agent")"
-  peer_a="$(agent_peer_a "$agent")"
-  peer_b="$(agent_peer_b "$agent")"
-  label="$(provider_label "$agent")"
-  peer_a_label="$(provider_label "$peer_a")"
-  peer_b_label="$(provider_label "$peer_b")"
+skill_subst() {
+  local agent="$1"
+  sed -e "s#@@SPEC@@#$(agent_peer_spec "$agent")#g" \
+      -e "s#@@PEER_A@@#$(agent_peer_a "$agent")#g" \
+      -e "s#@@PEER_B@@#$(agent_peer_b "$agent")#g" \
+      -e "s#@@LABEL@@#$(provider_label "$agent")#g" \
+      -e "s#@@PEER_A_LABEL@@#$(provider_label "$(agent_peer_a "$agent")")#g" \
+      -e "s#@@PEER_B_LABEL@@#$(provider_label "$(agent_peer_b "$agent")")#g"
+}
 
-  sed -e "s#@@SPEC@@#$spec#g" \
-      -e "s#@@PEER_A@@#$peer_a#g" \
-      -e "s#@@PEER_B@@#$peer_b#g" \
-      -e "s#@@LABEL@@#$label#g" \
-      -e "s#@@PEER_A_LABEL@@#$peer_a_label#g" \
-      -e "s#@@PEER_B_LABEL@@#$peer_b_label#g" <<'BODY'
+skill_body() {
+  local agent="$1" skill="$2"
+  case "$skill" in
+    cross-model-review)  skill_body_review  | skill_subst "$agent" ;;
+    cross-model-consult) skill_body_consult | skill_subst "$agent" ;;
+    *) err "unknown skill '$skill'."; return 2 ;;
+  esac
+}
+
+# Only name and description reach the system prompt; the body loads on
+# activation. Both descriptions therefore name the situations that should
+# trigger them, not just what they do.
+skill_body_review() {
+  cat <<'BODY'
 ---
 name: cross-model-review
-description: Consult @@PEER_A_LABEL@@ or @@PEER_B_LABEL@@ as an independent read-only peer through Model Peer, or run a full cross-model review of the current diff. Use before committing to an architecture, schema, or migration decision; on security-sensitive work such as authn/authz, sandboxing, input handling, secrets, or crypto; when a bug has outlived two hypotheses; when reviewing an implementation before handing it back; and before opening a pull request.
+description: Run an independent cross-model review of the current Git diff with Model Peer. Every installed model reviews the same changes without seeing the others' conclusions, then a synthesizer reconciles them. Use before opening a pull request, after any change to security-sensitive code, and when you want more than your own read on a change you just wrote.
 ---
 
-# Cross-model peer review
+# Cross-model review
 
-You are @@LABEL@@. **@@PEER_A_LABEL@@** and **@@PEER_B_LABEL@@** are available as
-independent, read-only engineering peers. Reach them through Model Peer.
+You are @@LABEL@@. **@@PEER_A_LABEL@@** and **@@PEER_B_LABEL@@** review alongside
+you, independently.
 
 ```bash
-# one peer, one answer
-model-peer ask @@SPEC@@ "<focused question>"
-
-# every installed model reviews the current diff independently, then one
-# synthesizer reconciles the findings
-model-peer review ["focus"]
-
-# which peers are available here
-model-peer doctor
+model-peer review ["focus instructions"]
 ```
 
-## When to consult a peer
+Every installed model receives the same Git status and patch — tracked changes and
+new untracked files alike — and reviews without seeing the others' conclusions.
+Only then does a synthesizer reconcile the findings. Reviewers are always leaves:
+none of them consults another model, which is what makes agreement between them
+real signal rather than an echo.
+
+Run it before opening a pull request, and again after any change to
+security-sensitive code.
+
+```bash
+model-peer review "Focus on authorization and tenant isolation"
+model-peer review --models @@PEER_A@@,@@PEER_B@@     # exclude yourself
+model-peer review --timeout 300                       # bound each reviewer
+```
+
+It takes minutes and prints progress on stderr. Let it finish. A reviewer that
+times out, fails, or returns nothing is dropped and named; synthesis needs two
+survivors and says so when the panel was incomplete.
+
+## What to do with the report
+
+Report the synthesized findings as they are, grouped by severity. Then, for each
+one, say whether you agree and why. Reviewers do not know this project's
+invariants, so a finding that contradicts the rules in this repository is wrong
+here however sound it sounds in general.
+
+Do not apply fixes unless you are asked to.
+
+If you are reading this **while acting as a peer** in someone else's
+consultation, these instructions do not apply to you. Answer the question you
+were asked and consult no one.
+BODY
+}
+
+skill_body_consult() {
+  cat <<'BODY'
+---
+name: cross-model-consult
+description: Ask @@PEER_A_LABEL@@ or @@PEER_B_LABEL@@ for an independent second opinion on one focused question, using Model Peer. Use before committing to an architecture, schema, or migration decision; on security-sensitive work such as authn/authz, sandboxing, input handling, secrets, or crypto; when a bug has outlived two of your own hypotheses; when you are inferring the behaviour of unfamiliar code or a dependency; and when two approaches are tied and you want the tradeoff.
+---
+
+# Consult a peer
+
+You are @@LABEL@@. **@@PEER_A_LABEL@@** and **@@PEER_B_LABEL@@** are available as
+independent, read-only engineering peers.
+
+```bash
+model-peer ask @@SPEC@@ "<focused question>"
+model-peer doctor                      # which peers are available here
+```
+
+## When it is worth the wait
 
 - before committing to an architecture, schema, or migration decision
 - when a bug has outlived two of your own hypotheses
 - security-sensitive work: authn/authz, sandboxing, input handling, secrets, crypto
 - unfamiliar code, or a dependency whose behavior you are inferring
-- reviewing an implementation you just wrote, before you hand it back
 - an assumption you cannot cheaply verify by reading the code
 - two approaches you cannot decide between — ask for the tradeoff, not the verdict
 
-Run `model-peer review` before opening a pull request, and again after any change
-to security-sensitive code.
-
 Do not consult for anything you can settle by reading the code. Every consultation
-costs a model call and tens of seconds.
+is a real model call against the developer's account and takes tens of seconds.
 
 ## How to ask
 
@@ -1026,30 +1169,29 @@ Pipe context in when the question is about something not on disk:
 git diff main... | model-peer ask @@PEER_B@@ "What breaks in production?"
 ```
 
-## Peer output is advisory
+## The answer is advisory
 
-Evaluate every response before acting on it. Peers do not know this project's
-invariants, so advice that contradicts the rules in this repository is wrong here
-however sound it sounds in general.
+Evaluate it before acting. Peers do not know this project's invariants, so advice
+that contradicts the rules in this repository is wrong here however sound it
+sounds in general.
 
-When a peer materially changed a decision, say which model you asked and whether you
-took the advice. Never present a peer's output as your own conclusion.
+When a peer materially changed your decision, say which model you asked and
+whether you took the advice. Never present a peer's output as your own conclusion.
 
-## Limits
+Leave `--depth` at its default: each peer answers alone, and lengthening the chain
+is a human's deliberate call. A model is never consulted twice in one chain.
 
-Leave `--depth` at its default of `1`: each peer answers alone, and lengthening the
-chain is a human's deliberate call. A model is never consulted by itself.
-
-If you are reading this **while acting as a peer** in someone else's consultation,
-these instructions do not apply to you. Answer the question and consult no one.
+If you are reading this **while acting as a peer** in someone else's
+consultation, these instructions do not apply to you. Answer the question you
+were asked and consult no one.
 BODY
 }
 
 # Every managed file carries this line, which is how `update` and `check` tell a
 # file Model Peer owns from one a developer wrote by hand.
 skill_file() {
-  local agent="$1"
-  skill_body "$agent" | awk -v marker="$SKILL_MANAGED_MARKER" -v version="$VERSION" '
+  local agent="$1" skill="$2"
+  skill_body "$agent" "$skill" | awk -v marker="$SKILL_MANAGED_MARKER" -v version="$VERSION" '
     NR == 1 { print; next }
     !done && $0 == "---" {
       print
@@ -1063,7 +1205,8 @@ skill_file() {
 }
 
 command_file_body() {
-  cat <<CMD
+  case "$1" in
+    cross-model-review) cat <<CMD
 ---
 description: Independent cross-model review of the current working diff
 argument-hint: [focus instructions]
@@ -1086,19 +1229,45 @@ Then:
    project's invariants; project rules win over generic advice.
 3. Do not apply any fix unless I ask for it.
 CMD
+      ;;
+    cross-model-consult) cat <<CMD
+---
+description: Ask another vendor's model for an independent second opinion
+argument-hint: <focused question>
+allowed-tools: Bash(model-peer:*)
+---
+
+$SKILL_MANAGED_MARKER Version $VERSION. Re-run \`model-peer update\` to refresh. -->
+
+Ask an independent peer the question in \`\$ARGUMENTS\` with
+\`model-peer ask <model> "<question>"\`. Run \`model-peer doctor\` first if you are
+unsure which peers are installed, and pick one that is not yourself.
+
+The peer runs read-only in this working directory, so name files and symbols in
+the question rather than pasting excerpts, and ask one focused thing.
+
+If \`\$ARGUMENTS\` is empty, ask me what I want a second opinion on rather than
+guessing.
+
+Then report the peer's answer, say which model you asked, and state plainly
+whether you agree with it and why. Peers do not know this project's invariants;
+project rules win. Do not act on the advice without telling me.
+CMD
+      ;;
+  esac
 }
 
-# Managed files are owned outright, so they are compared and replaced whole. No
-# marker surgery, because nothing Model Peer writes lives inside someone else's
-# file any more.
+# Maps a managed path back to the content it should hold.
 mp_desired_content() {
-  local rel="$1"
+  local rel="$1" agent skill
   case "$rel" in
-    "$COMMAND_FILE") command_file_body ;;
-    .claude/*) skill_file claude ;;
-    .codex/*)  skill_file codex ;;
-    .gemini/*) skill_file gemini ;;
+    .claude/commands/peer-review.md) command_file_body cross-model-review; return ;;
+    .claude/commands/peer-ask.md)    command_file_body cross-model-consult; return ;;
   esac
+  # .<agent>/skills/<skill>/SKILL.md
+  agent="${rel%%/*}"; agent="${agent#.}"
+  skill="${rel#*/skills/}"; skill="${skill%%/*}"
+  skill_file "$agent" "$skill"
 }
 
 mp_is_managed() {
@@ -1180,15 +1349,25 @@ mp_target_dir() {
 
 # Every file init manages, for the given agents, as "relative-path" lines.
 mp_managed_files() {
-  local agents="$1" want_command="$2" agent
+  local agents="$1" want_command="$2" agent skill
   for agent in claude codex gemini; do
     mp_in_list "$agent" "$agents" || continue
-    agent_skill_path "$agent"
-    printf '\n'
+    for skill in $SKILL_NAMES; do
+      agent_skill_path "$agent" "$skill"
+      printf '\n'
+    done
   done
   if (( want_command == 1 )) && mp_in_list claude "$agents"; then
-    printf '%s\n' "$COMMAND_FILE"
+    for skill in $SKILL_NAMES; do
+      command_path "$skill"
+      printf '\n'
+    done
   fi
+}
+
+# Every path init could ever manage, for update and doctor to walk.
+mp_all_paths() {
+  mp_managed_files 'claude,codex,gemini' 1
 }
 
 init_usage() {
@@ -1241,7 +1420,7 @@ cmd_init() {
         ;;
       --dir=*) dir="${1#--dir=}" ;;
       --no-command) want_command=0 ;;
-      --print) print_only='claude' ;;
+      --print) print_only='review' ;;
       --print=*) print_only="${1#--print=}" ;;
       --dry-run) MP_DRY_RUN=1 ;;
       --force) MP_FORCE=1 ;;
@@ -1258,9 +1437,15 @@ cmd_init() {
 
   if [[ -n "$print_only" ]]; then
     case "$print_only" in
-      claude|codex|gemini) skill_file "$print_only" ;;
-      command) command_file_body ;;
-      *) err "unknown --print target '$print_only'. Use claude, codex, gemini, or command."; return 2 ;;
+      review)          skill_file claude cross-model-review ;;
+      consult)         skill_file claude cross-model-consult ;;
+      review-command)  command_file_body cross-model-review ;;
+      consult-command) command_file_body cross-model-consult ;;
+      *)
+        err "unknown --print target '$print_only'."
+        err 'Use review, consult, review-command, or consult-command.'
+        return 2
+        ;;
     esac
     return 0
   fi
@@ -1332,7 +1517,7 @@ USAGE
 }
 
 cmd_update() {
-  local check=0 dir='' rel path desired agent
+  local check=0 dir=''
   MP_DRY_RUN=0
   MP_FORCE=0
 
@@ -1354,9 +1539,9 @@ cmd_update() {
   local root
   root="$(mp_target_dir "$dir")" || return 2
 
-  local found=0 stale=0 unmanaged=0
-  for agent in claude codex gemini; do
-    rel="$(agent_skill_path "$agent")"
+  local found=0 stale=0 unmanaged=0 rel path desired
+  while IFS= read -r rel; do
+    [[ -n "$rel" ]] || continue
     path="$root/$rel"
     [[ -e "$path" ]] || continue
     found=1
@@ -1373,25 +1558,9 @@ cmd_update() {
       mp_report "$( (( check == 1 )) && printf 'stale' || printf 'updated' )" "$rel"
       stale=1
     fi
-  done
-
-  path="$root/$COMMAND_FILE"
-  if [[ -e "$path" ]]; then
-    found=1
-    if mp_is_managed "$path"; then
-      desired="$(mp_desired_content "$COMMAND_FILE")"
-      if [[ "$(cat "$path")" == "$desired" ]]; then
-        mp_report 'current' "$COMMAND_FILE"
-      else
-        (( check == 1 )) || printf '%s\n' "$desired" > "$path"
-        mp_report "$( (( check == 1 )) && printf 'stale' || printf 'updated' )" "$COMMAND_FILE"
-        stale=1
-      fi
-    else
-      mp_report 'foreign' "$COMMAND_FILE (not written by Model Peer; left alone)"
-      unmanaged=1
-    fi
-  fi
+  done <<EOF
+$(mp_all_paths)
+EOF
 
   if (( found == 0 )); then
     err 'no Model Peer files found in this project. Run: model-peer init'
@@ -1407,26 +1576,135 @@ cmd_update() {
   return 0
 }
 
+# ---------------------------------------------------------------------------
+# Folder trust
+#
+# Gemini refuses to load project skills in a directory its folder-trust gate has
+# not blessed, and says so only as "Skipping project agents due to untrusted
+# folder". That makes a correctly installed skill look broken.
+#
+# Only Gemini needs this. Codex was verified to load project skills in an
+# untrusted directory (its trust layer gates .codex/rules/, not skills), and
+# Claude Code prompts once, interactively, on first use. Writing to
+# ~/.claude.json would also mean editing a large file Claude Code is actively
+# writing, which is not a trade worth making for a prompt the developer will
+# answer anyway.
+#
+# Trust is a security control, so this is a separate opt-in command. `init` never
+# calls it, only points at it.
+# ---------------------------------------------------------------------------
+
+GEMINI_TRUST_FILE="$HOME/.gemini/trustedFolders.json"
+
+trust_usage() {
+  cat <<'USAGE'
+Usage:
+  model-peer trust [--dir DIR] [--check]
+
+Marks a directory as trusted for Gemini CLI, which otherwise refuses to load the
+project skills Model Peer installed and reports no skills at all.
+
+This edits ~/.gemini/trustedFolders.json, adding one TRUST_FOLDER entry for the
+directory. Nothing else is changed, and no other CLI is touched: Codex loads
+project skills without trust, and Claude Code asks you once, interactively.
+
+  --dir DIR   Directory to trust (default: the Git root, else the cwd)
+  --check     Report whether the directory is trusted; change nothing
+USAGE
+}
+
+cmd_trust() {
+  local dir='' check=0
+  while (( $# > 0 )); do
+    case "$1" in
+      --dir)
+        shift; (( $# > 0 )) || { err '--dir requires a value.'; return 2; }
+        dir="$1"
+        ;;
+      --dir=*) dir="${1#--dir=}" ;;
+      --check) check=1 ;;
+      -h|--help) trust_usage; return 0 ;;
+      -*) err "unknown trust option: $1"; return 2 ;;
+      *) err "trust takes no positional arguments (got '$1')."; return 2 ;;
+    esac
+    shift
+  done
+
+  local root
+  root="$(mp_target_dir "$dir")" || return 2
+
+  local current='untrusted'
+  if [[ -f "$GEMINI_TRUST_FILE" ]] && grep -Fq "\"$root\"" "$GEMINI_TRUST_FILE"; then
+    if grep -F "\"$root\"" "$GEMINI_TRUST_FILE" | grep -Fq 'TRUST_FOLDER'; then
+      current='trusted'
+    else
+      current='explicitly distrusted'
+    fi
+  fi
+
+  if (( check == 1 )); then
+    printf 'Gemini folder trust: %s\n  %s\n' "$current" "$root"
+    [[ "$current" == 'trusted' ]] || return 1
+    return 0
+  fi
+
+  if [[ "$current" == 'trusted' ]]; then
+    printf 'Gemini already trusts %s\n' "$root"
+    return 0
+  fi
+
+  # A flat string-to-string map is all this file has ever held. Refuse anything
+  # else rather than risk mangling a structure this cannot round-trip.
+  if [[ -f "$GEMINI_TRUST_FILE" ]] && grep -qE '[[{][^"]*[[{]|\[' "$GEMINI_TRUST_FILE"; then
+    err "$GEMINI_TRUST_FILE is not the flat map this expects; refusing to rewrite it."
+    err 'Add this entry by hand, or trust the folder from an interactive gemini session.'
+    return 1
+  fi
+
+  local tmp
+  tmp="$(mktemp "${TMPDIR:-/tmp}/model-peer-trust.XXXXXX")"
+  MP_TMP_SCRATCH="$tmp"
+
+  {
+    printf '{\n'
+    if [[ -f "$GEMINI_TRUST_FILE" ]]; then
+      # Keep every existing entry except one for this exact path, then re-add it.
+      grep -E '^\s*"' "$GEMINI_TRUST_FILE" \
+        | grep -Fv "\"$root\"" \
+        | sed -e 's/,[[:space:]]*$//' -e 's/$/,/'
+    fi
+    printf '  "%s": "TRUST_FOLDER"\n' "$root"
+    printf '}\n'
+  } > "$tmp"
+
+  mkdir -p "$(dirname "$GEMINI_TRUST_FILE")"
+  cat "$tmp" > "$GEMINI_TRUST_FILE"
+  rm -f "$tmp"
+  MP_TMP_SCRATCH=''
+
+  printf 'Gemini now trusts %s\n' "$root"
+  printf '  %s\n' "$GEMINI_TRUST_FILE"
+  if [[ "$current" == 'explicitly distrusted' ]]; then
+    note 'this replaced an explicit DO_NOT_TRUST entry for that path.'
+  fi
+  printf '\nVerify with:  gemini skills list\n'
+}
+
 # Missing skills are the single most common reason consultation never happens.
 doctor_repo_skills() {
-  local root rel agent found=0
+  local root rel found=0
   root="$(mp_target_dir '')" || return 0
-  for agent in claude codex gemini; do
-    rel="$(agent_skill_path "$agent")"
+  while IFS= read -r rel; do
+    [[ -n "$rel" ]] || continue
     [[ -f "$root/$rel" ]] || continue
     if (( found == 0 )); then
       printf '\nProject skills in %s\n' "$root"
       found=1
     fi
     printf '  %s\n' "$rel"
-  done
-  if [[ -f "$root/$COMMAND_FILE" ]]; then
-    if (( found == 0 )); then
-      printf '\nProject skills in %s\n' "$root"
-      found=1
-    fi
-    printf '  %s\n' "$COMMAND_FILE"
-  fi
+  done <<EOF
+$(mp_all_paths)
+EOF
   if (( found == 0 )); then
     printf '\nProject skills: none in %s (run: model-peer init)\n' "$root"
   fi
@@ -1518,9 +1796,17 @@ main() {
       shift
       cmd_review "$@"
       ;;
+    _delegate)
+      shift
+      cmd_delegate "$@"
+      ;;
     init)
       shift
       cmd_init "$@"
+      ;;
+    trust)
+      shift
+      cmd_trust "$@"
       ;;
     update)
       shift

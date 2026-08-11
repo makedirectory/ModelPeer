@@ -56,7 +56,7 @@ EOF
 chmod +x "$TMP/bin/claude" "$TMP/bin/codex" "$TMP/bin/gemini"
 
 # Basic CLI/version.
-[[ "$(model-peer --version)" == 'model-peer 0.5.0' ]]
+[[ "$(model-peer --version)" == 'model-peer 0.6.0' ]]
 
 # Ask dispatch + safety args + stdin closure.
 printf 'sentinel\n' | model-peer ask codex 'review this' >/dev/null
@@ -85,6 +85,35 @@ for m in claude codex gemini; do
     [[ $? -eq 64 ]]
   fi
 done
+
+# Cycle detection across the WHOLE chain, not just its tail. Blocking only
+# claude -> claude while permitting claude -> codex -> claude still lets a model
+# review its own work one hop removed.
+for m in claude codex gemini; do
+  if MODEL_PEER_STACK="codex:gemini:claude" model-peer ask "$m" --depth 5 'cycle' >/dev/null 2>&1; then
+    echo "expected $m to be blocked as already present in the chain" >&2; exit 1
+  else
+    [[ $? -eq 64 ]]
+  fi
+done
+if MODEL_PEER_STACK='claude:codex' model-peer ask claude --depth 3 'loop' >/dev/null 2>&1; then
+  echo 'expected claude -> codex -> claude to be blocked' >&2; exit 1
+else
+  [[ $? -eq 64 ]]
+fi
+# A model not yet in the chain is still allowed.
+MODEL_PEER_STACK='claude:codex' model-peer ask gemini --depth 3 'fresh' >/dev/null
+
+# A peer cannot raise the ceiling it inherited. Inside a chain the inherited
+# limit is a cap, not a default, otherwise any peer could buy itself more hops.
+: > "$LOG"
+MODEL_PEER_MAX_DEPTH=2 MODEL_PEER_STACK='claude' \
+  model-peer ask codex --depth 10 'escalate' >/dev/null 2>"$TMP/clamp.err"
+grep -Fq 'exceeds the inherited limit' "$TMP/clamp.err"
+# Clamped to 2, so the peer is told it has no budget left rather than 8 levels.
+grep -Fq 'Remaining peer-chain depth: 0' "$LOG"
+# Lowering below the inherited limit is still allowed.
+MODEL_PEER_MAX_DEPTH=5 MODEL_PEER_STACK='claude' model-peer ask codex --depth 2 'lower' >/dev/null
 
 # Depth guard: default depth 1 permits one hop and no more.
 model-peer ask codex 'top level' >/dev/null
@@ -125,7 +154,30 @@ fi
 : > "$LOG"
 model-peer ask claude --depth 2 'may delegate' >/dev/null
 grep -Fq '<--tools> <Read,Glob,Grep,Bash>' "$LOG"
-grep -Fq '<--allowedTools> <Bash(model-peer:*)>' "$LOG"
+# The grant must name the crippled entry point, not `model-peer` wholesale:
+# `model-peer init`/`update` write files, so a broad grant would let a peer
+# rewrite the workspace's skills.
+grep -Fq '<--allowedTools> <Bash(model-peer _delegate:*)>' "$LOG"
+if grep -Fq '<Bash(model-peer:*)>' "$LOG"; then
+  echo 'expected no unrestricted model-peer grant' >&2; exit 1
+fi
+# The prompt must authorize exactly the command the sandbox permits.
+grep -Fq 'model-peer _delegate <model>' "$LOG"
+
+# The delegate entry point is deliberately incapable of anything else.
+for bad in 'init' 'update' 'review' 'trust' 'doctor'; do
+  if model-peer _delegate "$bad" >/dev/null 2>&1; then
+    echo "expected _delegate to reject '$bad' as a provider" >&2; exit 1
+  else
+    [[ $? -eq 2 ]]
+  fi
+done
+if model-peer _delegate codex --depth 9 'x' >/dev/null 2>&1; then
+  echo 'expected _delegate to reject options' >&2; exit 1
+else
+  [[ $? -eq 2 ]]
+fi
+model-peer _delegate codex 'a real question' >/dev/null
 
 # Core invariant: depth is a limit, not a permission. Gemini's sandbox cannot
 # scope execution to model-peer alone, so run_shell_command stays denied at every
@@ -179,21 +231,25 @@ printf 'two\n' >> demo.txt
 model-peer review --models claude,codex,gemini --synthesizer claude 'focus test' >/dev/null
 ai-review --models claude,codex --synthesizer codex 'compat review' >/dev/null
 
-# Reviewers are leaves by default, and the synthesizer is a leaf at any depth.
+# Reviewers and the synthesizer are ALWAYS leaves. Three reviewers that can
+# consult each other are not three independent observations, so this is not
+# configurable: --depth is refused outright rather than silently ignored.
 : > "$LOG"
-model-peer review --models claude,codex --synthesizer codex 'depth default' >/dev/null
+model-peer review --models claude,codex --synthesizer codex 'leaves' >/dev/null
 if grep -Fq 'Remaining peer-chain depth: 1' "$LOG"; then
-  echo 'expected reviewers to be leaves at the default depth' >&2; exit 1
+  echo 'expected every reviewer to be a leaf' >&2; exit 1
 fi
-: > "$LOG"
-model-peer review --models claude,codex --synthesizer codex --depth 2 'depth two' >/dev/null
-grep -Fq 'Remaining peer-chain depth: 1' "$LOG"
-# Exactly one leaf prompt per reviewer plus the synthesis prompt, and synthesis
-# never gets budget to delegate.
-[[ "$(grep -c 'Remaining peer-chain depth: 0' "$LOG")" -eq 1 ]]
-model-peer review --models claude,codex --depth 10 'ceiling ok' >/dev/null
-if model-peer review --models claude,codex --depth 11 'too deep' >/dev/null 2>&1; then
-  echo 'expected review --depth 11 to be rejected' >&2; exit 1
+# One leaf prompt per reviewer plus one for synthesis.
+[[ "$(grep -c 'Remaining peer-chain depth: 0' "$LOG")" -eq 3 ]]
+for d in 2 10; do
+  if model-peer review --models claude,codex --depth "$d" 'chain' >/dev/null 2>&1; then
+    echo "expected review --depth $d to be rejected" >&2; exit 1
+  else
+    [[ $? -eq 2 ]]
+  fi
+done
+if model-peer review --models claude,codex --depth=2 'chain' >/dev/null 2>&1; then
+  echo 'expected review --depth=2 to be rejected' >&2; exit 1
 else
   [[ $? -eq 2 ]]
 fi
@@ -255,6 +311,28 @@ for bad in abc -1 1.5; do
 done
 
 cd "$TMP/repo"
+
+# Synthesis is bounded like every other consultation. A hung synthesizer would
+# otherwise hang the run forever, after every reviewer had already succeeded.
+cp "$TMP/bin/claude" "$TMP/bin/claude.real"
+cat > "$TMP/bin/claude.hang" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == auth && "${2:-}" == status ]]; then exit 0; fi
+hang
+EOF
+chmod +x "$TMP/bin/claude.hang"
+SYNTH_START="$(date +%s)"
+cp "$TMP/bin/claude.hang" "$TMP/bin/claude"
+if model-peer review --models codex,gemini --synthesizer claude --timeout 3 \
+    'bounded synthesis' >/dev/null 2>"$TMP/synth.err"; then
+  echo 'expected a hung synthesizer to fail rather than hang' >&2; exit 1
+else
+  [[ $? -eq 124 ]]
+fi
+SYNTH_ELAPSED=$(( $(date +%s) - SYNTH_START ))
+(( SYNTH_ELAPSED < 40 )) || { echo "synthesis was not bounded ($SYNTH_ELAPSED s)" >&2; exit 1; }
+grep -Fq 'exceeded the 3s timeout' "$TMP/synth.err"
+cp "$TMP/bin/claude.real" "$TMP/bin/claude"
 
 # A reviewer that hangs is dropped, and synthesis still runs on the survivors.
 cp "$TMP/bin/codex-hang" "$TMP/bin/codex"
@@ -360,11 +438,16 @@ cmp "$TMP/agents-before.md" AGENTS.md
 [[ "$(readlink CLAUDE.md)" == 'AGENTS.md' ]]
 [[ "$(readlink GEMINI.md)" == 'AGENTS.md' ]]
 
-# One self-contained skill per agent, plus the Claude Code slash command.
+# Two self-contained skills per agent, plus a slash command for each.
 for a in claude codex gemini; do
   [[ -f ".$a/skills/cross-model-review/SKILL.md" ]]
+  [[ -f ".$a/skills/cross-model-consult/SKILL.md" ]]
 done
 [[ -f .claude/commands/peer-review.md ]]
+[[ -f .claude/commands/peer-ask.md ]]
+# review and consult fire on different cues, so their descriptions must differ.
+grep -Fq 'cross-model review of the current Git diff' .codex/skills/cross-model-review/SKILL.md
+grep -Fq 'independent second opinion' .codex/skills/cross-model-consult/SKILL.md
 # No stray markdown in Codex's rules directory: that path holds Starlark .rules
 # files governing command execution, and markdown there is ignored.
 [[ ! -e .codex/rules ]]
@@ -380,15 +463,16 @@ grep -Fq 'before opening a pull request' "$TMP/fm.txt"
 [[ "$(head -1 .codex/skills/cross-model-review/SKILL.md)" == '---' ]]
 
 # Each skill is addressed to the agent that reads it and names its two peers.
-grep -Fq 'You are Claude.' .claude/skills/cross-model-review/SKILL.md
-grep -Fq 'You are Codex.'  .codex/skills/cross-model-review/SKILL.md
-grep -Fq 'You are Gemini.' .gemini/skills/cross-model-review/SKILL.md
-grep -Fq 'Codex' .claude/skills/cross-model-review/SKILL.md
-if grep -Fq 'You are Claude.' .codex/skills/cross-model-review/SKILL.md; then
-  echo "expected the Codex skill not to address Claude" >&2; exit 1
-fi
-# A peer that activates this skill mid-consultation must be told to stand down.
-grep -Fq 'while acting as a peer' .claude/skills/cross-model-review/SKILL.md
+for s in cross-model-review cross-model-consult; do
+  grep -Fq 'You are Claude.' ".claude/skills/$s/SKILL.md"
+  grep -Fq 'You are Codex.'  ".codex/skills/$s/SKILL.md"
+  grep -Fq 'You are Gemini.' ".gemini/skills/$s/SKILL.md"
+  if grep -Fq 'You are Claude.' ".codex/skills/$s/SKILL.md"; then
+    echo "expected the Codex $s skill not to address Claude" >&2; exit 1
+  fi
+  # A peer that activates a skill mid-consultation must be told to stand down.
+  grep -Fq 'while acting as a peer' ".claude/skills/$s/SKILL.md"
+done
 
 # Re-running is idempotent, and update reports no drift.
 cp .codex/skills/cross-model-review/SKILL.md "$TMP/skill-first.md"
@@ -460,10 +544,17 @@ mkdir -p "$PRINT_REPO"
 cd "$PRINT_REPO"
 model-peer init --print > "$TMP/print.md"
 grep -Fq 'name: cross-model-review' "$TMP/print.md"
-model-peer init --print=gemini > "$TMP/print-gemini.md"
-grep -Fq 'You are Gemini.' "$TMP/print-gemini.md"
-model-peer init --print=command > "$TMP/print-command.md"
-grep -Fq 'allowed-tools: Bash(model-peer:*)' "$TMP/print-command.md"
+model-peer init --print=consult > "$TMP/print-consult.md"
+grep -Fq 'name: cross-model-consult' "$TMP/print-consult.md"
+model-peer init --print=review-command > "$TMP/print-cmd.md"
+grep -Fq 'allowed-tools: Bash(model-peer:*)' "$TMP/print-cmd.md"
+model-peer init --print=consult-command > "$TMP/print-cmd2.md"
+grep -Fq 'second opinion' "$TMP/print-cmd2.md"
+if model-peer init --print=bogus >/dev/null 2>&1; then
+  echo 'expected an unknown --print target to be rejected' >&2; exit 1
+else
+  [[ $? -eq 2 ]]
+fi
 [[ -z "$(ls -A "$PRINT_REPO")" ]]
 
 # --split is gone and says what to do instead.
@@ -489,9 +580,26 @@ else
   [[ $? -eq 2 ]]
 fi
 
-# The shipped example must match what init writes, so the docs cannot drift.
-model-peer init --print > "$TMP/example.md"
-diff -u "$TMP/example.md" "$ROOT/examples/SKILL.md"
+# `trust` writes only Gemini's trusted-folder file, and only for one directory.
+TRUST_HOME="$TMP/trust-home"
+mkdir -p "$TRUST_HOME/.gemini"
+printf '{\n  "/pre/existing": "TRUST_FOLDER"\n}\n' > "$TRUST_HOME/.gemini/trustedFolders.json"
+if HOME="$TRUST_HOME" model-peer trust --dir "$TMP/repo" --check >/dev/null 2>&1; then
+  echo 'expected trust --check to report an untrusted directory' >&2; exit 1
+else
+  [[ $? -eq 1 ]]
+fi
+HOME="$TRUST_HOME" model-peer trust --dir "$TMP/repo" >/dev/null
+HOME="$TRUST_HOME" model-peer trust --dir "$TMP/repo" --check >/dev/null
+grep -Fq '/pre/existing' "$TRUST_HOME/.gemini/trustedFolders.json"
+grep -Fq 'TRUST_FOLDER' "$TRUST_HOME/.gemini/trustedFolders.json"
+# Idempotent: a second run must not duplicate the entry.
+HOME="$TRUST_HOME" model-peer trust --dir "$TMP/repo" >/dev/null
+[[ "$(grep -c "$TMP/repo" "$TRUST_HOME/.gemini/trustedFolders.json")" -eq 1 ]]
+# No other CLI's configuration is touched: Codex loads project skills without
+# trust, and Claude Code prompts once interactively.
+[[ ! -e "$TRUST_HOME/.codex" ]]
+[[ ! -e "$TRUST_HOME/.claude.json" ]]
 
 cd "$ROOT"
 

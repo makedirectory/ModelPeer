@@ -60,9 +60,9 @@ copy of `bin/model-peer` inside a `<<'__MODEL_PEER__'` heredoc. **Any change to
 build otherwise, and `tests/smoke.sh` independently installs and `cmp`s the result.
 This is the single easiest way to break the repo.
 
-`examples/SKILL.md` is the second copy: it is generated from
-`model-peer init --print`, so any change to the skill text needs `make sync` too.
-`make check-sync` and `tests/smoke.sh` both diff it.
+There is deliberately no `examples/` directory. It predated `init` and became a
+third copy of the skill text; `model-peer init --print` and `--dry-run` cover the
+same need without another file to keep in sync.
 
 `bin/ask-claude`, `bin/ask-codex`, `bin/ask-gemini`, and `bin/ai-review` are
 four-line compatibility shims that `exec` into `model-peer`; they are also embedded

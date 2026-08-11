@@ -23,11 +23,19 @@ model-peer init
 An agent skill for each CLI, plus a slash command for Claude Code:
 
 ```text
-.claude/skills/cross-model-review/SKILL.md
-.codex/skills/cross-model-review/SKILL.md
-.gemini/skills/cross-model-review/SKILL.md
-.claude/commands/peer-review.md
+.claude/skills/cross-model-review/SKILL.md      review the current diff
+.claude/skills/cross-model-consult/SKILL.md     ask one peer a question
+.codex/skills/...                               both, per CLI
+.gemini/skills/...
+.claude/commands/peer-review.md                 /peer-review
+.claude/commands/peer-ask.md                    /peer-ask
 ```
+
+Two skills, because the tool does two things that fire on different cues.
+**Review** cross-checks a diff across the whole panel; **consult** gets one peer's
+opinion on one question. A single skill covering both had a description that was a
+list of unrelated triggers, which is the shape that stops a skill activating when
+it should.
 
 That is the whole footprint. **Your `AGENTS.md`, `CLAUDE.md`, and `GEMINI.md` are
 never read, written, or symlinked.** Every path above is one Model Peer owns
@@ -45,7 +53,8 @@ Narrow it if you like, and preview before committing to anything:
 model-peer init --agents claude,codex   # skip Gemini
 model-peer init --no-command            # skip the slash command
 model-peer init --dry-run               # report; write nothing
-model-peer init --print                 # dump the SKILL.md to stdout
+model-peer init --print=review          # dump a SKILL.md to stdout
+model-peer init --print=consult
 ```
 
 :::note How skills load, and why the description matters
@@ -61,9 +70,19 @@ the skill never fires.
 
 :::caution Gemini needs a trusted folder
 Gemini skips project skills in a directory its folder-trust gate has not blessed,
-reporting `Skipping project agents due to untrusted folder`. Trust the directory
-once from an interactive `gemini` session and the skill loads from then on.
-(Model Peer's own consultations are unaffected — those pass `--skip-trust`.)
+reporting `Skipping project agents due to untrusted folder`. One command fixes it:
+
+```bash
+model-peer trust        # adds one TRUST_FOLDER entry for this directory
+gemini skills list      # should now list both skills
+```
+
+That writes a single entry to `~/.gemini/trustedFolders.json` and nothing else.
+Codex loads project skills without trust, and Claude Code asks you once
+interactively, so neither is touched. Since folder trust is a security control,
+`init` never does this for you — it only points at the command.
+
+(Model Peer's own consultations were never affected: those pass `--skip-trust`.)
 :::
 
 ## Why skills, and not your rules files
@@ -164,7 +183,7 @@ stale.
 ```yaml
 - name: Check agent skills
   run: |
-    curl -fsSL https://raw.githubusercontent.com/makedirectory/ModelPeer/v0.5.0/install.sh | bash
+    curl -fsSL https://raw.githubusercontent.com/makedirectory/ModelPeer/v0.6.0/install.sh | bash
     ~/.local/bin/model-peer update --check
 ```
 
@@ -181,9 +200,9 @@ the developer's own vendor account, and a full `review` across three models take
 minutes. The shipped skill tells agents not to consult for anything answerable by
 reading the code, which is the difference between a useful habit and a bill.
 
-The same text ships as
-[`examples/SKILL.md`](https://github.com/makedirectory/ModelPeer/blob/main/examples/SKILL.md),
-generated from `model-peer init --print` so the two can never disagree.
+Want to read the text before installing anything? `model-peer init --print`
+writes it to stdout and touches nothing. There is no separate `examples/`
+directory: the skills are the examples, and they are installable.
 
 ## Next
 

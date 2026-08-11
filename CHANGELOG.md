@@ -2,6 +2,74 @@
 
 All notable changes to Model Peer are documented here.
 
+## 0.6.0 - 2026-08-10
+
+A correctness and security release. Several documented guarantees were stronger
+than what the code enforced; each one below was reproduced before it was fixed,
+and each has a regression test.
+
+### Fixed
+
+- **A model could appear twice in one chain.** `check_chain` compared only the
+  last entry of `MODEL_PEER_STACK`, so `claude → claude` was blocked but
+  `claude → codex → claude` was permitted — a model reviewing its own work one
+  hop removed, which is exactly what the guarantee ruled out. The guard now tests
+  membership across the whole chain.
+- **A peer could raise the ceiling it inherited.** `--depth` took precedence over
+  the inherited `MODEL_PEER_MAX_DEPTH`, so a peer running under a limit of 2
+  could request `--depth 10` and get it, contradicting "the limit propagates down
+  the chain". Inside a chain the inherited value is now a hard cap: a peer may
+  lower it, never raise it, and the clamp is reported.
+- **Synthesis was unbounded.** Every reviewer was bounded by `--timeout`, but the
+  synthesis call omitted the argument and fell through to "no limit", so a hung
+  synthesizer could hang the run indefinitely after every reviewer succeeded.
+- **A delegating Claude peer was granted more than the prompt allowed.** The
+  grant was `Bash(model-peer:*)`, and `model-peer` stopped being a read-only
+  executable when `init` and `update` arrived — a peer could have rewritten the
+  workspace's skills. Delegation now grants `Bash(model-peer _delegate:*)` only.
+- Temporary directories are removed on interrupt, not just on the normal path.
+  The review context holds the diff and the contents of untracked files, and an
+  interrupted run left it in the system temp directory.
+
+### Added
+
+- `model-peer _delegate <model> "<question>"`, the only command a delegating peer
+  is authorized to run. It inherits every limit, accepts no options, and cannot
+  reach `init`, `update`, `review`, `trust`, or `doctor`. The executable
+  capability now matches what the prompt authorizes rather than depending on the
+  peer choosing to obey it.
+- `model-peer trust` marks a directory as trusted for Gemini CLI, which otherwise
+  refuses to load project skills and reports none at all. It adds one
+  `TRUST_FOLDER` entry to `~/.gemini/trustedFolders.json` and touches nothing
+  else. Codex loads project skills without trust and Claude Code prompts
+  interactively, so neither is modified. Folder trust is a security control, so
+  `init` never does this for you.
+- A second skill. `cross-model-review` cross-checks a diff across the panel;
+  `cross-model-consult` gets one peer's opinion on one question. They fire on
+  different cues, and one description covering both triggers neither well. Each
+  gets its own slash command: `/peer-review` and `/peer-ask`.
+
+### Changed
+
+- **`review` no longer accepts `--depth`.** Reviewers and the synthesizer are
+  always leaves. Reviewers that can consult one another are not independent
+  observations, which is the entire value of the panel — and the review prompt
+  already told reviewers not to consult anyone, contradicting the outer
+  consultation prompt at depth > 1. `--depth` now exits `2` pointing at `ask`.
+  `ask` explores; `review` cross-checks.
+- The README heading is now "By default, there is no chat between models", with
+  the depth-1 and depth-\>1 topologies shown, since `ask --depth` genuinely does
+  let one model consume another's answer.
+- `examples/` is removed. It predated `init` and had become a third copy of the
+  skill text, after `bin/model-peer` and the copy embedded in `install.sh`.
+  `model-peer init --print` and `--dry-run` serve the same purpose without another
+  generated file to keep in sync.
+- `init --print` takes `review`, `consult`, `review-command`, or
+  `consult-command`.
+
+Thanks to the reviewer who worked through `main` as a maintainer would; items 1–5
+above came from that read.
+
 ## 0.5.0 - 2026-08-10
 
 Setup is now a skill. Every file `init` writes is self-contained and owned by
