@@ -790,6 +790,13 @@ $(cat "$reviews_dir/gemini.txt" 2>/dev/null || printf '[not run]')
 PROMPT
 }
 
+# Panel policy operates on a normalized outcome, not on a raw shell status: a
+# reviewer that exits 0 having written nothing has failed, and a reviewer that
+# timed out may still have left bytes in its output file.
+reviewer_completed() {
+  [[ "$(cat "$1/$2.status" 2>/dev/null)" == 'ok' ]]
+}
+
 cmd_review() {
   local reviewers="${MODEL_PEER_REVIEWERS:-}"
   local synthesizer="${MODEL_PEER_SYNTHESIZER:-}"
@@ -916,23 +923,24 @@ USAGE
     printf 'Per-reviewer timeout: disabled\n' >&2
   fi
 
+  # Each reviewer owns one output file. A `tee` per reviewer would put two model
+  # responses on the same stdout and leave the reviewer's own exit status behind a
+  # PIPESTATUS the parent cannot read once the pipeline is no longer in the
+  # foreground — so the review is captured first and replayed afterwards.
+  #
+  # The inherited chain is preserved deliberately: at top level it is empty, so
+  # each reviewer starts fresh, but a review launched from inside a peer chain
+  # stays subject to the same depth guard and cannot escape it.
+  #
   # Kept as a counter plus a newline-delimited string rather than arrays: Bash 3.2
   # expands an empty array under `set -u` as an error, and this stays readable.
   local completed=0 dropped='' reason rc
   for p in "${valid[@]}"; do
-    printf '\n=== %s independent review ===\n\n' "$(provider_label "$p")" >&2
     prompt="$(review_prompt "$p" "$focus" "$context")"
-    # The inherited chain is preserved deliberately: at top level it is empty, so
-    # each reviewer starts fresh, but a review launched from inside a peer chain
-    # stays subject to the same depth guard and cannot escape it.
-    #
-    # tee keeps the review streaming to the terminal as it arrives while also
-    # capturing it for synthesis; PIPESTATUS[0] is the reviewer's own status,
-    # read inside the `if` so `set -e` cannot abort first.
-    if run_provider "$p" "$max_depth" "$prompt" "$timeout" | tee "$tmpdir/$p.txt"; then
+    if run_provider "$p" "$max_depth" "$prompt" "$timeout" > "$tmpdir/$p.txt"; then
       rc=0
     else
-      rc="${PIPESTATUS[0]}"
+      rc=$?
     fi
 
     reason=''
@@ -949,13 +957,30 @@ USAGE
 
     if [[ -n "$reason" ]]; then
       err "$(provider_label "$p") $reason; dropping it from the panel."
+      # Whatever a dropped reviewer wrote before it failed is a partial answer, not
+      # a review. Replacing the file keeps it out of both the replay and the
+      # synthesis input: a truncated finding read as a completed one is worse than
+      # no finding at all.
       printf '[reviewer %s and was dropped from the panel]\n' "$reason" > "$tmpdir/$p.txt"
+      printf 'dropped\n' > "$tmpdir/$p.status"
       dropped="${dropped}$(provider_label "$p") — $reason
 "
       failed=1
     else
+      note "$(provider_label "$p") completed."
+      printf 'ok\n' > "$tmpdir/$p.status"
       completed=$(( completed + 1 ))
     fi
+  done
+
+  # Replay the reviews that survived. Order follows the requested model list, never
+  # the order the reviewers happened to finish in, so stdout is byte-identical from
+  # run to run and stays pipeable. Headers stay on stderr with the rest of the
+  # progress reporting; only model output reaches stdout.
+  for p in "${valid[@]}"; do
+    reviewer_completed "$tmpdir" "$p" || continue
+    printf '\n=== %s independent review ===\n\n' "$(provider_label "$p")" >&2
+    cat "$tmpdir/$p.txt"
   done
 
   # A cross-model review needs at least two independent views to be worth the
