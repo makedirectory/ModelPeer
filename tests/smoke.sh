@@ -320,6 +320,19 @@ else
   [[ $? -eq 2 ]]
 fi
 
+# A model may not appear twice in one panel — the same rule the chain guard applies
+# within a chain. Two copies of one model are one opinion counted twice, and both
+# would own the same reviewer output file: serially the second overwrote the first,
+# in parallel they race, and either way the panel reports itself complete.
+for dup in 'gemini,gemini' 'claude,codex,claude'; do
+  if model-peer review --models "$dup" --synthesizer claude 'dupes' >/dev/null 2>"$TMP/dupe.err"; then
+    echo "expected --models $dup to be rejected" >&2; exit 1
+  else
+    [[ $? -eq 2 ]]
+  fi
+  grep -Fq 'listed more than once' "$TMP/dupe.err"
+done
+
 # A review launched from inside a peer chain stays under the depth guard.
 if MODEL_PEER_STACK='claude:codex' model-peer review --models claude,codex 'nested' >/dev/null 2>&1; then
   echo 'expected nested review to be blocked by the depth guard' >&2; exit 1

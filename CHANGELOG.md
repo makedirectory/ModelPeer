@@ -44,6 +44,20 @@ All notable changes to Model Peer are documented here.
   process tree beneath each one, so no model call is left running in the
   background against your account.
 
+- **A model listed twice in `--models` ran twice and was reported as two
+  reviewers.** `--models gemini,gemini,gemini` invoked Gemini three times — three
+  times the usage — while all three wrote the same `gemini.txt`. Serially the last
+  one overwrote the others; concurrently they raced. The synthesizer then received
+  a single review and was told every reviewer in the panel completed, which is the
+  exact misreport the panel exists to prevent.
+
+  Duplicates are now a usage error (exit `2`), applying the rule the chain guard
+  already enforced within a chain: a model may not appear twice.
+
+  ```text
+  model-peer: review model 'gemini' is listed more than once; a panel needs distinct models.
+  ```
+
 ## 0.5.1 - 2026-08-11
 
 ### Fixed

@@ -961,13 +961,26 @@ USAGE
   [[ -n "$reviewers" ]] || reviewers="$(installed_reviewers)"
   split_models "$reviewers"
 
-  local valid=() p
+  local valid=() p seen=''
   for p in "${MODELS[@]}"; do
     case "$p" in
       claude|codex|gemini) ;;
       '') continue ;;
       *) err "unknown review model '$p'."; return 2 ;;
     esac
+    # The same rule the chain guard enforces, applied across the panel: a model may
+    # not appear twice. One model's opinion counted twice is not two independent
+    # observations, and the panel would report itself complete on the strength of a
+    # duplicate. Both copies would also own the same output file — serially the
+    # second overwrote the first, in parallel they race.
+    case ":$seen:" in
+      *":$p:"*)
+        err "review model '$p' is listed more than once; a panel needs distinct models."
+        err 'Running one model twice is one opinion counted twice, not a cross-model review.'
+        return 2
+        ;;
+    esac
+    seen="${seen:+$seen:}$p"
     provider_installed "$p" || {
       err "reviewer '$p' is requested but not installed."
       return 127
