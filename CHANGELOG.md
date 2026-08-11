@@ -60,10 +60,18 @@ and each has a regression test.
 - The README heading is now "By default, there is no chat between models", with
   the depth-1 and depth-\>1 topologies shown, since `ask --depth` genuinely does
   let one model consume another's answer.
-- `examples/` is removed. It predated `init` and had become a third copy of the
-  skill text, after `bin/model-peer` and the copy embedded in `install.sh`.
-  `model-peer init --print` and `--dry-run` serve the same purpose without another
-  generated file to keep in sync.
+- **This project now runs `model-peer init` on itself.** The skills under
+  `.claude/`, `.codex/`, and `.gemini/` are the real installed artifacts, live in
+  the repository that produces them. `make sync` refreshes them with
+  `model-peer update`, and `make check-sync` fails the build when they drift from
+  `bin/model-peer` — so the dogfood and the drift check are the same thing.
+- `examples/` is removed, superseded by the above. It predated `init` and had
+  become a third copy of the skill text, after `bin/model-peer` and the copy
+  embedded in `install.sh`. The skills are the examples, and they are installable.
+- The hand-written `.claude/rules/cross-model-consultation.md`,
+  `.codex/rules/cross-model-consultation.md`, and `.gemini/global_rules.md` are
+  deleted. The first duplicated the consult skill and drifted from it; the other
+  two were never loaded by anything.
 - `init --print` takes `review`, `consult`, `review-command`, or
   `consult-command`.
 

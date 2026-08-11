@@ -60,9 +60,17 @@ copy of `bin/model-peer` inside a `<<'__MODEL_PEER__'` heredoc. **Any change to
 build otherwise, and `tests/smoke.sh` independently installs and `cmp`s the result.
 This is the single easiest way to break the repo.
 
-There is deliberately no `examples/` directory. It predated `init` and became a
-third copy of the skill text; `model-peer init --print` and `--dry-run` cover the
-same need without another file to keep in sync.
+**This project runs `model-peer init` on itself.** The skills under `.claude/`,
+`.codex/`, and `.gemini/` are not documentation — they are the artifacts Model
+Peer installs, live in the repository that produces them. `make sync` refreshes
+them via `model-peer update`, and `make check-sync` fails the build if they drift
+from `bin/model-peer`. So the dogfood and the drift check are the same thing, and
+there is no separate `examples/` directory to keep in step.
+
+Do not hand-edit those files; edit `skill_body_review` / `skill_body_consult` in
+`bin/model-peer` and run `make sync`. Do not re-add `.claude/rules/`,
+`.codex/rules/`, or `.gemini/global_rules.md`: the first duplicates the consult
+skill, and the other two are inert.
 
 `bin/ask-claude`, `bin/ask-codex`, `bin/ask-gemini`, and `bin/ai-review` are
 four-line compatibility shims that `exec` into `model-peer`; they are also embedded
