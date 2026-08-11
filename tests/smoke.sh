@@ -56,7 +56,7 @@ EOF
 chmod +x "$TMP/bin/claude" "$TMP/bin/codex" "$TMP/bin/gemini"
 
 # Basic CLI/version.
-[[ "$(model-peer --version)" == 'model-peer 0.4.0' ]]
+[[ "$(model-peer --version)" == 'model-peer 0.5.0' ]]
 
 # Ask dispatch + safety args + stdin closure.
 printf 'sentinel\n' | model-peer ask codex 'review this' >/dev/null
@@ -603,6 +603,87 @@ HOME="$TRUST_HOME" model-peer trust --dir "$TMP/repo" >/dev/null
 
 cd "$ROOT"
 
+
+# `doctor --probe` runs one real consultation per CLI and judges the result from
+# the filesystem, never from what the model claims. Against stubs we can drive
+# each outcome exactly.
+cd "$TMP/repo"
+
+# Versions appear in the normal listing, so bug reports carry them.
+cat > "$TMP/bin/claude" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == auth && "${2:-}" == status ]]; then exit 0; fi
+if [[ "${1:-}" == --version ]]; then printf '9.9.9 (Claude Code)\n'; exit 0; fi
+printf 'CLAUDE ARGS:' >> "$MODEL_PEER_TEST_LOG"
+printf ' <%s>' "$@" >> "$MODEL_PEER_TEST_LOG"
+# A well-behaved peer: reads the token, refuses to write.
+if [[ -f probe-token.txt ]]; then cat probe-token.txt; fi
+printf 'claude review output\n'
+EOF
+chmod +x "$TMP/bin/claude"
+model-peer doctor > "$TMP/doctor.txt" 2>&1
+grep -Fq '9.9.9' "$TMP/doctor.txt"
+
+# A peer that reads but does not write is verified clean.
+model-peer doctor --probe --models claude --timeout 20 > "$TMP/probe-ok.txt" 2>&1
+grep -Fq 'quoted the probe token' "$TMP/probe-ok.txt"
+grep -Fq 'sentinel.txt unchanged' "$TMP/probe-ok.txt"
+grep -Fq 'Verified read-only: Claude' "$TMP/probe-ok.txt"
+
+# A peer that writes is a safety failure, detected on disk even though the stub
+# never says so — this is the whole point of the command.
+cat > "$TMP/bin/claude" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == auth && "${2:-}" == status ]]; then exit 0; fi
+if [[ "${1:-}" == --version ]]; then printf '9.9.9\n'; exit 0; fi
+printf 'MODIFIED\n' > sentinel.txt
+: > probe-write-test.txt
+printf 'I was unable to modify anything.\n'
+EOF
+chmod +x "$TMP/bin/claude"
+if model-peer doctor --probe --models claude --timeout 20 > "$TMP/probe-bad.txt" 2>&1; then
+  echo 'expected a writing peer to fail the probe' >&2; exit 1
+else
+  [[ $? -eq 1 ]]
+fi
+grep -Fq 'sentinel.txt WAS MODIFIED' "$TMP/probe-bad.txt"
+grep -Fq 'created probe-write-test.txt' "$TMP/probe-bad.txt"
+grep -Fq 'read-only contract did not hold' "$TMP/probe-bad.txt"
+
+# A peer that never answers is inconclusive, not a pass. Reporting "no peer
+# modified the workspace" there would be true and misleading at once.
+cat > "$TMP/bin/claude" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == auth && "${2:-}" == status ]]; then exit 0; fi
+if [[ "${1:-}" == --version ]]; then printf '9.9.9\n'; exit 0; fi
+hang
+EOF
+chmod +x "$TMP/bin/claude"
+if model-peer doctor --probe --models claude --timeout 3 > "$TMP/probe-hang.txt" 2>&1; then
+  echo 'expected an unanswered probe to be reported as unverified' >&2; exit 1
+else
+  [[ $? -eq 1 ]]
+fi
+grep -Fq 'nothing verified' "$TMP/probe-hang.txt"
+grep -Fq 'Not verified:' "$TMP/probe-hang.txt"
+if grep -Fq 'Verified read-only: Claude' "$TMP/probe-hang.txt"; then
+  echo 'expected a hung peer not to be reported as verified' >&2; exit 1
+fi
+cp "$TMP/bin/claude.real" "$TMP/bin/claude"
+
+# The probe leaves nothing behind.
+[[ -z "$(ls -d "${TMPDIR:-/tmp}"/model-peer-probe.* 2>/dev/null)" ]]
+
+# doctor still rejects stray arguments.
+if model-peer doctor --bogus >/dev/null 2>&1; then
+  echo 'expected doctor to reject an unknown option' >&2; exit 1
+else
+  [[ $? -eq 2 ]]
+fi
+
+cd "$ROOT"
 
 # Installer must reproduce the repository binaries exactly.
 cd "$ROOT"

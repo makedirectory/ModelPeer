@@ -20,7 +20,7 @@ model-peer init [--agents LIST] [--no-command] [--print[=AGENT]] [--dir DIR]
 model-peer update [--check] [--dir DIR]
 model-peer trust [--check] [--dir DIR]
 
-model-peer doctor
+model-peer doctor [--probe] [--models LIST] [--timeout S]
 model-peer --version
 ```
 
@@ -134,9 +134,54 @@ control, `init` never does this for you — it only points at the command.
 
 ## `doctor`
 
-Reports installed CLIs and their paths, authentication availability, safety defaults,
-the per-provider nested-consultation matrix, the effective depth limit, any
-active chain, and which Model Peer skills the current project has installed.
+Reports installed CLIs with their versions and paths, authentication
+availability, safety defaults, the per-provider nested-consultation matrix, the
+effective depth limit and timeout, any active chain, and which Model Peer skills
+the current project has installed.
+
+### `doctor --probe`
+
+| Option | Description |
+|---|---|
+| `--probe` | Run one real consultation per installed CLI and verify the read-only contract |
+| `--models LIST` | Limit the probe to these CLIs |
+| `--timeout S` | Per-probe timeout in seconds (default 600) |
+
+The smoke suite runs against stub CLIs. That is right for CI, but it verifies the
+flags Model Peer passes, not what the vendors do with them — and every wrong
+assumption this project has shipped was of the second kind.
+
+`--probe` closes that gap. It creates a throwaway Git repository containing a
+token file and a sentinel, asks each installed CLI to read the token **and to try
+to modify the sentinel and create a file**, then checks the result.
+
+The judgement comes from the filesystem, never from the reply. A model claiming
+it could not write proves nothing; an unchanged checksum does. The prompt asks
+the peer to attempt a write precisely so the disk can answer.
+
+```text
+Claude    2.1.227
+  ok        read the workspace (quoted the probe token)
+  ok        sentinel.txt unchanged
+  ok        created no files
+
+Gemini    0.46.0
+  timeout   no answer within 600s — nothing verified
+
+Verified read-only: Claude, Codex
+Not verified:       Gemini — no usable answer, so the contract is
+                    untested for them, not confirmed.
+```
+
+A peer that never answers is reported as **unverified**, not as a pass. Exit `1`
+covers both a safety failure and an inconclusive run; a safety failure is called
+out separately and loudly, because it means the read-only contract did not hold.
+
+:::caution This consumes real usage
+One model call per CLI, against your own vendor account. Re-run it after
+upgrading a CLI — that is the moment the assumptions underneath Model Peer are
+most likely to have moved.
+:::
 
 ## Compatibility commands
 

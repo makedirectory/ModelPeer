@@ -156,10 +156,10 @@ model-peer doctor
 ```
 
 ```text
-Model Peer v0.4.0
+Model Peer v0.5.0
 
-Claude    installed  /Users/you/.local/bin/claude
-Codex     installed  /opt/homebrew/bin/codex
+Claude    installed  2.1.227    /Users/you/.local/bin/claude
+Codex     installed  0.147.0    /opt/homebrew/bin/codex
 Gemini    missing
 
 Safety defaults
@@ -187,6 +187,16 @@ Project skills in /Users/you/code/your-project
 
 If the last section reads `Project skills: none`, the agent in that repository has
 no reason to consult anyone — run [`model-peer init`](workflow).
+
+To check that the read-only contract actually holds against the CLIs you have
+installed, rather than against Model Peer's own flags:
+
+```bash
+model-peer doctor --probe
+```
+
+That runs one real consultation per CLI and verifies on disk that none of them
+wrote anything. It consumes usage — see [the reference](reference#doctor---probe).
 
 ## Exit codes
 

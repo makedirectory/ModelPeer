@@ -2,6 +2,33 @@
 
 All notable changes to Model Peer are documented here.
 
+## 0.5.0 - 2026-08-11
+
+### Added
+
+- **`model-peer doctor --probe`** runs one real consultation per installed CLI in
+  a throwaway Git repository and checks that the read-only contract actually
+  holds. The smoke suite runs against stubs, which verifies the flags Model Peer
+  passes but not what the vendors do with them — and every wrong assumption this
+  project has shipped was of the second kind.
+
+  The judgement comes from the filesystem, never from the reply. The probe asks
+  each peer to read a token **and to attempt to modify a sentinel file and create
+  a new one**, then checks the sentinel's contents and the directory listing. A
+  model claiming it could not write proves nothing; an unchanged file does.
+
+  A peer that times out or returns nothing is reported as **unverified**, not as
+  a pass. `--models` and `--timeout` narrow the run. It consumes real usage, so
+  it is opt-in and never part of plain `doctor`.
+- `model-peer doctor` reports each CLI's version alongside its path, so a bug
+  report carries the versions of the three tools whose behaviour Model Peer
+  depends on.
+
+Running the probe immediately earned its place: Claude 2.1.227 and Codex 0.147.0
+verified clean, while Gemini 0.46.0 did not answer at all. A direct
+`gemini -p` call in the same directory hung identically, which is the distinction
+the probe exists to draw — the vendor CLI, not Model Peer's wrapping.
+
 ## 0.4.0 - 2026-08-10
 
 Setup became a skill, and the chain guards were brought in line with what the
