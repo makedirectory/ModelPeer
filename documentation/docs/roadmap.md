@@ -70,7 +70,7 @@ Write access:           never
 Shell access to peers:  never
 ```
 
-Cycle detection is **done** as of 0.6.0. A chain like:
+Cycle detection is **done** as of 0.4.0. A chain like:
 
 ```text
 Claude

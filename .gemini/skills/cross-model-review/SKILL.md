@@ -3,7 +3,7 @@ name: cross-model-review
 description: Run an independent cross-model review of the current Git diff with Model Peer. Every installed model reviews the same changes without seeing the others' conclusions, then a synthesizer reconciles them. Use before opening a pull request, after any change to security-sensitive code, and when you want more than your own read on a change you just wrote.
 ---
 
-<!-- Managed by `model-peer init`. Version 0.6.0. Re-run `model-peer update` to refresh; local edits are replaced. -->
+<!-- Managed by `model-peer init`. Version 0.4.0. Re-run `model-peer update` to refresh; local edits are replaced. -->
 
 # Cross-model review
 
