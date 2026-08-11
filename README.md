@@ -65,7 +65,7 @@ git changes --+--> Codex ---+--> synthesis
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/makedirectory/ModelPeer/v0.4.0/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/makedirectory/ModelPeer/v0.5.0/install.sh | bash
 ```
 
 Or clone and run `./install.sh`. As with any remote shell installer, inspect it
@@ -119,7 +119,7 @@ model-peer review ["focus instructions"]                    # cross-model review
 model-peer init                                             # install the skills
 model-peer update [--check]                                 # refresh them
 model-peer trust                                            # let Gemini load them
-model-peer doctor                                           # check setup
+model-peer doctor [--probe]                                 # check setup
 ```
 
 Every consultation is bounded (`--timeout`, 600s default) and reports progress on
@@ -146,7 +146,10 @@ Every consultation is bounded by `--timeout`, including the synthesis step.
 Reviews cover untracked files as well as tracked changes, so new code is reviewed
 rather than merely listed.
 
-This is defense in depth, not a formal sandbox. Upstream CLI behavior can change.
+This is defense in depth, not a formal sandbox. Upstream CLI behavior can change —
+`model-peer doctor --probe` runs one real consultation per CLI and verifies on
+disk that none of them wrote anything, which is the only way to know it still
+holds after a vendor upgrade.
 
 → [Safety boundaries](https://modelpeer.app/safety) ·
 [Peer-chain depth](https://modelpeer.app/depth) ·

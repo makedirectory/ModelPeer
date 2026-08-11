@@ -70,7 +70,7 @@ Write access:           never
 Shell access to peers:  never
 ```
 
-Cycle detection is **done** as of 0.4.0. A chain like:
+Cycle detection is **done** — the CHANGELOG records which release. A chain like:
 
 ```text
 Claude

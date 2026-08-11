@@ -43,8 +43,12 @@ codex exec --sandbox read-only "say hello" </dev/null
 ```
 
 If that hangs too, the problem is the vendor CLI in your environment — usually
-authentication or network — and no Model Peer setting will fix it. `model-peer
-doctor` reports what authentication it can see.
+authentication or network — and no Model Peer setting will fix it.
+
+`model-peer doctor --probe` answers this directly. It runs one real consultation
+per CLI and reports which ones responded, so a hang shows up as
+`no answer within Ns — nothing verified` against that CLI alone rather than as a
+mysterious slow review.
 
 ## Partial panels
 
@@ -150,6 +154,19 @@ MODEL_PEER_MAX_DIFF_BYTES=1000000 model-peer review
 
 Consider reviewing a narrower change instead — a reviewer given half a megabyte of
 patch tends toward generic findings.
+
+## Is the read-only contract actually holding?
+
+```bash
+model-peer doctor --probe
+```
+
+This runs one real consultation per installed CLI in a throwaway repository and
+checks **on disk** that nothing was written — a model's assurance that it could
+not write is not evidence. See [the reference](reference#doctor---probe).
+
+Worth running after upgrading any of the vendor CLIs, since that is when the
+behaviour Model Peer depends on is most likely to have changed.
 
 ## Exit codes
 
