@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="0.5.0"
+VERSION="0.5.1"
 BIN_DIR="${MODEL_PEER_BIN_DIR:-$HOME/.local/bin}"
 DO_SETUP=0
 INSTALL_DEPS=0
@@ -9,7 +9,7 @@ DO_LOGIN=0
 
 usage() {
   cat <<'USAGE'
-Model Peer installer v0.5.0
+Model Peer installer v0.5.1
 
 Usage:
   ./install.sh [options]
@@ -83,12 +83,12 @@ write_commands() {
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="0.5.0"
+VERSION="0.5.1"
 PROGRAM="model-peer"
 
 usage() {
   cat <<'USAGE'
-Model Peer v0.5.0 — cross-model peer review for coding agents.
+Model Peer v0.5.1 — cross-model peer review for coding agents.
 
 Usage:
   model-peer ask claude "<focused question>"
@@ -1791,6 +1791,61 @@ cmd_trust() {
   printf '\nVerify with:  gemini skills list\n'
 }
 
+# Gemini picks one auth method and records it in settings.json. Reporting "cached
+# OAuth is verified on first request" whenever no environment variable is set is
+# wrong whenever that recorded choice is something else — and the failure it hides
+# is the worst kind. Configured for an API key with no key present, Gemini does
+# not error: headless, with stdin closed, it blocks on an auth prompt nobody can
+# answer, and a review just hangs. Naming that state costs one file read.
+# shellcheck disable=SC2016  # backticks below are literal prose, not substitution
+gemini_auth_status() {
+  local settings="$HOME/.gemini/settings.json"
+  local accounts="$HOME/.gemini/google_accounts.json"
+  local selected=''
+
+  if [[ -f "$settings" ]]; then
+    selected="$(sed -n 's/.*"selectedType"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$settings" | head -1)"
+  fi
+
+  case "$selected" in
+    *api-key*)
+      if [[ -n "${GEMINI_API_KEY:-}${GOOGLE_API_KEY:-}" ]]; then
+        printf 'API key (configured, key present)'
+      else
+        printf 'BROKEN — configured for an API key, but neither GEMINI_API_KEY nor\n'
+        printf '                       GOOGLE_API_KEY is set. Headless calls will hang rather than\n'
+        printf '                       fail, because Gemini waits on a prompt that stdin cannot\n'
+        printf '                       answer. Export a key, or re-run `gemini` and pick another\n'
+        printf '                       sign-in method.'
+      fi
+      ;;
+    *vertex*)
+      if [[ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}${GOOGLE_CLOUD_PROJECT:-}" ]]; then
+        printf 'Vertex AI (configured, credentials present)'
+      else
+        printf 'BROKEN — configured for Vertex AI, but no credentials are set'
+      fi
+      ;;
+    *oauth*|*personal*|*login*)
+      if [[ -f "$accounts" ]] && ! grep -Fq '"active": null' "$accounts"; then
+        printf 'OAuth (signed in)'
+      else
+        printf 'BROKEN — configured for OAuth, but no account is signed in (run: gemini)'
+      fi
+      ;;
+    '')
+      if [[ -n "${GEMINI_API_KEY:-}${GOOGLE_API_KEY:-}${GOOGLE_APPLICATION_CREDENTIALS:-}" ]]; then
+        printf 'environment-based auth detected'
+      else
+        printf 'no method chosen yet; run `gemini` once to sign in'
+      fi
+      ;;
+    *)
+      printf '%s (unrecognized; Model Peer cannot verify it)' "$selected"
+      ;;
+  esac
+}
+
 # Missing skills are the single most common reason consultation never happens.
 doctor_repo_skills() {
   local root rel found=0
@@ -2046,11 +2101,7 @@ cmd_doctor() {
     fi
   fi
   if provider_installed gemini; then
-    if [[ -n "${GEMINI_API_KEY:-}${GOOGLE_API_KEY:-}${GOOGLE_APPLICATION_CREDENTIALS:-}" ]]; then
-      printf 'Gemini authentication: environment-based auth detected\n'
-    else
-      printf 'Gemini authentication: installed; cached OAuth is verified on first request (run: gemini)\n'
-    fi
+    printf 'Gemini authentication: %s\n' "$(gemini_auth_status)"
   fi
 
   doctor_repo_skills

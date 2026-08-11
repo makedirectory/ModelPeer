@@ -4,7 +4,7 @@ argument-hint: <focused question>
 allowed-tools: Bash(model-peer:*)
 ---
 
-<!-- Managed by `model-peer init`. Version 0.5.0. Re-run `model-peer update` to refresh. -->
+<!-- Managed by `model-peer init`. Version 0.5.1. Re-run `model-peer update` to refresh. -->
 
 Ask an independent peer the question in `$ARGUMENTS` with
 `model-peer ask <model> "<question>"`. Run `model-peer doctor` first if you are

@@ -53,6 +53,11 @@ done
 # install.sh embeds bin/model-peer verbatim; regenerate rather than trust the sed.
 bash tools/sync-installer.sh >/dev/null
 
+# This repo runs `model-peer init` on itself, and each managed file stamps the
+# version into its header. Refresh them here or the sweep below reports its own
+# artifacts as stale on every bump.
+bash bin/model-peer update >/dev/null
+
 # Sweep the whole tree rather than only the files listed above, so a version
 # pinned in a page nobody remembered to add here still fails the bump. The
 # CHANGELOG is excluded on purpose: old releases keep their own numbers.
