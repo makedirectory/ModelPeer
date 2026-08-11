@@ -2,6 +2,48 @@
 
 All notable changes to Model Peer are documented here.
 
+## Unreleased
+
+### Changed
+
+- **`model-peer review` now runs independent reviewers concurrently** rather than
+  serially. Reviewer wall-clock time is therefore approximately the slowest
+  requested reviewer rather than the sum of all reviewer runtimes.
+
+  ```text
+  serial:    Claude + Codex + Gemini + synthesis
+  parallel:  max(Claude, Codex, Gemini) + synthesis
+  ```
+
+  The practical benefit is larger than the arithmetic suggests: a vendor that hangs
+  for its full timeout no longer delays the *start* of every reviewer behind it.
+  Each reviewer's timeout window now begins when the panel does.
+
+  Parallel review reduces elapsed time, not provider usage. Every requested
+  reviewer is still invoked exactly once.
+
+- **Reviewer output is buffered per reviewer and replayed in panel order.**
+  Concurrent model responses cannot interleave on stdout, and the replay follows
+  the order the models were requested rather than the order they finished, so
+  `model-peer review > review.txt` is reproducible.
+
+- Existing timeout, partial-panel, `--strict`, empty-output, and synthesis
+  semantics are unchanged. Synthesis still begins only after every requested
+  reviewer has finished, failed, or timed out, and is still refused below two
+  surviving reviewers.
+
+### Fixed
+
+- **`SIGINT`/`SIGTERM` ran the cleanup and then carried on.** The handler removed
+  the review temp directory and returned, and the shell continued into code whose
+  temp directory no longer existed — so an interrupted review kept consulting
+  models and exited on whatever the interrupted statement happened to return.
+  Both signals now stop the panel and re-raise, giving the conventional `130`/`143`.
+
+  Interrupting a parallel review also stops every reviewer worker and the vendor
+  process tree beneath each one, so no model call is left running in the
+  background against your account.
+
 ## 0.5.1 - 2026-08-11
 
 ### Fixed

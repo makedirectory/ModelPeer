@@ -54,6 +54,10 @@ None of them sees the others' conclusions; only then does a synthesizer reconcil
 the findings. Because reviewers can't anchor on each other, agreement between them
 is real signal.
 
+Reviewers are independent, so they also run in parallel: a review costs roughly the
+slowest model rather than the sum of them, and Model Peer waits for the whole panel
+before synthesizing.
+
 ```text
               +--> Claude --+
               |             |

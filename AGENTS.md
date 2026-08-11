@@ -193,7 +193,7 @@ costs a whole review. Three rules hold here:
    out to `timeout(1)`, which macOS does not ship. On expiry it signals the
    **process group** — `set -m` puts the child in its own group first. Signalling
    only the direct child leaves vendor helper processes holding the inherited
-   stdout, so the downstream `tee` never sees EOF and the hang outlives the kill.
+   stdout, so a downstream reader never sees EOF and the hang outlives the kill.
    This is easy to reintroduce; the smoke test asserts no orphan survives.
 2. **Silence is failure, not consent.** A reviewer that exits `0` with zero bytes
    has reviewed nothing. Gemini's folder-trust gate failed exactly this way, and
@@ -203,6 +203,44 @@ costs a whole review. Three rules hold here:
    reviewer, not the run, but `synthesis_prompt` receives the dropped list and is
    told a gap in coverage is not evidence of safety. Synthesis below two surviving
    reviewers is refused outright: a one-model panel is not a cross-model review.
+
+### Parallel reviewers
+
+Reviewers are independent, so they are scheduled independently: `cmd_review` starts
+every requested reviewer before waiting for any, then waits for all of them to reach
+a terminal state before applying the partial-panel and `--strict` rules.
+
+> Parallelism changes **when** independent reviewers run, never what they receive,
+> what they may do, or how their results are judged.
+
+The scheduling is the easy part; the process bookkeeping is where this goes wrong.
+
+- Each reviewer writes its own file (`run_provider ... > "$tmpdir/$p.txt"`). Do not
+  reintroduce `tee` here — a backgrounded pipeline puts `PIPESTATUS` out of the
+  parent's reach and lets several model responses share one stdout.
+- Completed reviews are replayed after fan-in, in **requested-model order**.
+  Completion order must never be observable. A dropped reviewer's partial output is
+  overwritten, not replayed: a truncated finding read as a complete review is worse
+  than no review.
+- Each worker leads its own process group (`set -m` around the background call) and
+  installs its **own** traps. Bash resets inherited traps in a subshell, which is
+  what makes this safe — a worker running the parent's `mp_cleanup` would delete the
+  shared temp directory out from under its siblings. Parent owns the temp directory
+  and the worker registry; a worker owns exactly one vendor process tree.
+- A signalled worker forwards the signal down via `MP_LIMIT_CHILD_PID`, which
+  `run_with_limit` publishes. Killing the worker shell alone leaves the vendor CLI
+  running as an orphan holding an open model call.
+- Top-level `INT`/`TERM` re-raise after cleanup. Cleaning up and falling through
+  continues into code whose temp directory has just been removed.
+
+Fan-in waits in requested order, which serializes nothing because every worker is
+already running — that is why no `wait -n` is needed, and Bash 3.2 does not have it.
+
+The primary test is a **concurrency barrier**: stubs record that they started and
+block until every requested reviewer has. Serial orchestration can never open it.
+Wall-clock assertions are secondary evidence only. Note that a background job
+started without job control has SIGINT set to *ignored* and cannot trap it, so the
+interrupt test enables `set -m` — without that it silently proves nothing.
 
 ### Review context
 

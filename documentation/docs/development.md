@@ -58,6 +58,43 @@ Avoid:
 - `${var^^}` / `${var,,}` case conversion
 - `read -t` with fractional seconds
 - bare `"${arr[@]}"` on possibly-empty arrays — use `${arr[@]+"${arr[@]}"}`
+- `wait -n` — reviewer fan-in waits in requested order instead, which costs nothing
+  because every worker has already been started
+- GNU `timeout`, `xargs -P`, GNU `parallel` — none of them ship on macOS
+
+## Parallel reviewers
+
+`cmd_review` starts every requested reviewer before waiting for any of them, then
+waits for all of them to reach a terminal state before applying the partial-panel
+and `--strict` rules. Parallelism changes *when* independent reviewers run, never
+what they receive, what they may do, or how their results are judged.
+
+The process bookkeeping is where this is easy to get subtly wrong:
+
+- **Each worker writes its own file.** `run_provider ... > "$tmpdir/$p.txt"`, never
+  a `tee`. A backgrounded pipeline puts `PIPESTATUS` somewhere the parent cannot
+  read and lets several model responses share one stdout.
+- **Replay is deterministic.** Completed reviews are written to stdout after fan-in,
+  in requested-model order. Completion order never reaches the user.
+- **A dropped reviewer's partial output is destroyed,** not passed along. A
+  truncated finding read as a complete review is worse than no review.
+- **Each worker leads its own process group** (`set -m` around the background call),
+  so cleanup can signal one worker subtree as a unit.
+- **Each worker installs its own traps.** Bash resets inherited traps in a subshell,
+  which is what makes this safe — a worker running the parent's `mp_cleanup` would
+  delete the shared temp directory out from under its siblings. The parent owns the
+  temp directory and the worker registry; a worker owns exactly one vendor process
+  tree.
+- **A signalled worker forwards the signal downward.** `run_with_limit` publishes
+  the supervised process group in `MP_LIMIT_CHILD_PID`; killing only the worker
+  shell would leave the vendor CLI running as an orphan holding an open model call.
+- **INT and TERM re-raise.** Cleaning up and falling through would continue into
+  code whose temp directory has just been deleted.
+
+The primary test is a **concurrency barrier**: the stubs record that they started
+and then block until every requested reviewer has done the same. Serial
+orchestration can never open it. That is far less flaky than asserting elapsed time
+on a shared runner, which the suite does only as secondary evidence.
 
 ## Architecture notes
 

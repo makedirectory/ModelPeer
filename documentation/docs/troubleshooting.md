@@ -34,7 +34,9 @@ only the parent leaves those helpers holding the pipe open and the hang survives
 kill. `ask` exits `124` in this case, matching `timeout(1)`.
 
 A reviewer that times out is dropped from the panel rather than taking the whole run
-with it — see [Partial panels](#partial-panels) below.
+with it — see [Partial panels](#partial-panels) below. Because reviewers run
+concurrently, each timeout window starts when the panel does, so one stalled vendor
+no longer delays the models behind it.
 
 If a specific CLI hangs consistently, check it outside Model Peer:
 
@@ -49,6 +51,37 @@ authentication or network — and no Model Peer setting will fix it.
 per CLI and reports which ones responded, so a hang shows up as
 `no answer within Ns — nothing verified` against that CLI alone rather than as a
 mysterious slow review.
+
+## A review looks busy all at once
+
+**Signature:** several models appear to start at the same moment, and stderr lines
+from different providers arrive interleaved and in a different order each run.
+
+That is expected. Reviewers are independent, so they run concurrently: all of them
+start before Model Peer waits for any of them, and the reviewer phase costs roughly
+the slowest model rather than the sum of them.
+
+```text
+Starting Claude independent review...
+Starting Codex independent review...
+Starting Gemini independent review...
+model-peer: Codex still working (30s of 600s).
+```
+
+Model output itself is buffered per reviewer and replayed after the panel finishes,
+in the order the models were requested. stdout therefore never contains interleaved
+model responses and does not depend on which reviewer happened to finish first:
+
+```bash
+model-peer review > review.txt      # reproducible, whatever the finishing order
+```
+
+Interrupting a parallel review with Ctrl-C stops every reviewer and the vendor
+process tree beneath each one, so no model call is left running in the background.
+
+Parallel review reduces elapsed time, not provider usage — every requested reviewer
+is still invoked exactly once. Aborting a run early may mean more concurrent work
+was already consumed than under serial execution.
 
 ## Partial panels
 

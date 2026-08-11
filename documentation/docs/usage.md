@@ -68,8 +68,13 @@ Inside a Git repository:
 model-peer review
 ```
 
-Every reviewer receives the same Git status and patch and works independently. Only
-after all reviews complete does a synthesizer reconcile them.
+Every reviewer receives the same Git status and patch and works independently. They
+also run **in parallel** — independent reviewers have nothing to wait on, so the
+panel costs roughly the slowest reviewer rather than the sum of all of them. Only
+after all reviews reach a terminal state does a synthesizer reconcile them.
+
+Parallel review reduces elapsed time, not provider usage: every requested reviewer
+is still invoked exactly once.
 
 The patch covers **untracked files as well as tracked changes**, so a package you
 just created is reviewed rather than merely listed as a path.
@@ -109,6 +114,10 @@ progress on stderr every 30 seconds:
 model-peer review --timeout 300
 model-peer review --timeout 0      # no bound
 ```
+
+Because reviewers run concurrently, each timeout window starts when the panel does.
+One vendor hanging for the full 600 seconds no longer delays the *start* of the
+others — they finish while it stalls, and it is dropped when its own limit expires.
 
 A reviewer that times out, fails, or returns nothing at all is dropped from the
 panel and named. Synthesis proceeds while at least two reviewers produced a real
