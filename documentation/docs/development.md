@@ -35,11 +35,18 @@ the single easiest way to break the repository.
 the installer, the pinned `curl` URLs in the docs, and a smoke-test assertion:
 
 ```bash
-tools/bump-version.sh 0.3.0
+tools/bump-version.sh <major.minor.patch>
 ```
 
-That rewrites every occurrence, regenerates the embedded installer copy, and fails
-if any stale occurrence survives. Date the `CHANGELOG.md` entry, then tag the merge
+That rewrites every occurrence, regenerates `install.sh`'s embedded copy and then sweeps **every tracked file** for
+the old string, failing if one survives. The sweep is deliberately broader than the
+list of files the script rewrites, so a version pinned in a page nobody remembered
+to add still fails the bump rather than shipping stale. `CHANGELOG.md` and the
+lockfile are excluded on purpose: old releases keep their own numbers, and npm
+dependency versions are not ours.
+
+Write release examples as `<major.minor.patch>` rather than a real version, so a
+documentation snippet is never mistaken for a pin. Date the `CHANGELOG.md` entry, then tag the merge
 commit on `main`.
 
 ## Portability

@@ -14,16 +14,20 @@ documentation/build/
 documentation/.docusaurus/
 documentation/.cache-loader/
 
-# Claude
+# Agent directories. This project runs `model-peer init` on itself, so the skills
+# and commands below are the ones Model Peer installs — dogfooded here, and
+# checked against `model-peer init --print` by `make check-sync`. Everything else
+# under these directories is local session state.
 .claude/*
-!.claude/rules/
-!.claude/rules/**
+!.claude/skills/
+!.claude/skills/**
+!.claude/commands/
+!.claude/commands/**
 
-# Codex
 .codex/*
-!.codex/rules/
-!.codex/rules/**
+!.codex/skills/
+!.codex/skills/**
 
-# Gemini
 .gemini/*
-!.gemini/global_rules.md
+!.gemini/skills/
+!.gemini/skills/**

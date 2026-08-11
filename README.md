@@ -17,7 +17,7 @@ model-peer ask codex "Review this authentication design for bypasses"
 model-peer review
 ```
 
-## There is no chat between models
+## By default, there is no chat between models
 
 This is the part that surprises people. **Your agent is the hub.** Each consultation
 spawns another vendor's CLI, read-only, gets one answer, and exits. Nothing persists.
@@ -31,6 +31,16 @@ Primary agent
 ```
 
 The peer supplies evidence, not authority. Project rules and invariants still win.
+
+`--depth` deliberately relaxes this for `ask`, and only for `ask`:
+
+```text
+depth 1 (default)      primary -> peer -> primary
+depth >1 (opt-in)      primary -> peer -> peer -> primary
+```
+
+`model-peer review` never chains. Reviewers that can consult each other are not
+independent observations, which is the whole point of the panel.
 
 The peer also starts in your working directory with read tools enabled, so you don't
 paste code into the question — name files and symbols and let it look.
@@ -55,7 +65,7 @@ git changes --+--> Codex ---+--> synthesis
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/makedirectory/ModelPeer/v0.3.0/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/makedirectory/ModelPeer/v0.4.0/install.sh | bash
 ```
 
 Or clone and run `./install.sh`. As with any remote shell installer, inspect it
@@ -75,31 +85,40 @@ model-peer init
 ```
 
 ```text
-  created   AGENTS.md
-  linked    CLAUDE.md -> AGENTS.md
-  linked    GEMINI.md -> AGENTS.md
-  created   .claude/commands/peer-review.md (/peer-review)
+  created   .claude/skills/cross-model-review/SKILL.md
+  created   .claude/skills/cross-model-consult/SKILL.md
+  created   .codex/skills/...            (both, per CLI)
+  created   .gemini/skills/...
+  created   .claude/commands/peer-review.md
+  created   .claude/commands/peer-ask.md
 ```
+
+Two skills, because the tool does two things that fire on different cues:
+**review** cross-checks a diff across the whole panel, **consult** gets one peer's
+opinion on one question. Each is a self-contained directory in the place each
+vendor set aside for skills. **Your `AGENTS.md`, `CLAUDE.md`, and `GEMINI.md` are
+never read, written, or symlinked.**
 
 Now the agent consults a peer on its own — before an architecture decision, on a
 bug that has outlived two hypotheses, on anything security-sensitive — and tells
 you which model it asked and whether it took the advice. In Claude Code you also
 get `/peer-review` for a full cross-model review of the current diff.
 
-Commit those files and your team gets the same behavior. Re-running only rewrites
-the block between its own markers, so your existing rules are safe. Prefer one
-tailored file per CLI? `model-peer init --split`.
+Commit those files and your team gets the same behavior. After upgrading Model
+Peer, `model-peer update` refreshes them; `model-peer update --check` verifies
+them in CI.
 
 → [In your workflow](https://modelpeer.app/workflow) ·
-[Agent rules](https://modelpeer.app/agent-rules)
+[Agent skills](https://modelpeer.app/agent-rules)
 
 ## Commands
 
 ```bash
 model-peer ask <claude|codex|gemini> "<focused question>"   # consult one peer
 model-peer review ["focus instructions"]                    # cross-model review
-model-peer init [--split]                                   # install repo rules
-model-peer rules <install|print|check>                      # manage those rules
+model-peer init                                             # install the skills
+model-peer update [--check]                                 # refresh them
+model-peer trust                                            # let Gemini load them
 model-peer doctor                                           # check setup
 ```
 
@@ -116,9 +135,13 @@ Peers are launched with the most conservative non-interactive configuration each
 vendor supports: Plan mode or a read-only sandbox, no file-editing tools, no general
 shell, and stdin closed. Model Peer stores no credentials.
 
-Consultation chains are bounded by `--depth` (default 1, ceiling 10), and no model
-is ever consulted by itself. Depth is a **limit, not a permission** — raising it
-increases how many models can participate, never what a model can do to your system.
+Consultation chains are bounded by `--depth` (default 1, ceiling 10) on `ask`, and
+a model is never consulted twice in one chain. Depth is a **limit, not a
+permission** — raising it increases how many models can participate, never what a
+model can do to your system. A delegating peer is granted exactly one command,
+`model-peer _delegate`, which cannot write files or raise its own ceiling.
+
+Every consultation is bounded by `--timeout`, including the synthesis step.
 
 Reviews cover untracked files as well as tracked changes, so new code is reviewed
 rather than merely listed.

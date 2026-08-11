@@ -20,65 +20,94 @@ model-peer init
 
 ## What `init` writes
 
-By default, one shared rules file that all three CLIs read:
+An agent skill for each CLI, plus a slash command for Claude Code:
 
 ```text
-AGENTS.md                        the rules (Codex reads this)
-CLAUDE.md -> AGENTS.md           symlink (Claude Code)
-GEMINI.md -> AGENTS.md           symlink (Gemini CLI)
-.claude/commands/peer-review.md  the /peer-review slash command
+.claude/skills/cross-model-review/SKILL.md      review the current diff
+.claude/skills/cross-model-consult/SKILL.md     ask one peer a question
+.codex/skills/...                               both, per CLI
+.gemini/skills/...
+.claude/commands/peer-review.md                 /peer-review
+.claude/commands/peer-ask.md                    /peer-ask
 ```
 
-Git stores those symlinks as symlinks (mode `120000`), so they survive `git clone`
-and cannot drift apart. Commit all four and your teammates get the same behavior
-without doing anything.
+Two skills, because the tool does two things that fire on different cues.
+**Review** cross-checks a diff across the whole panel; **consult** gets one peer's
+opinion on one question. A single skill covering both had a description that was a
+list of unrelated triggers, which is the shape that stops a skill activating when
+it should.
 
-Prefer one tailored file per CLI — each addressing that model directly and naming
-its two peers?
+That is the whole footprint. **Your `AGENTS.md`, `CLAUDE.md`, and `GEMINI.md` are
+never read, written, or symlinked.** Every path above is one Model Peer owns
+outright, which is what makes [`model-peer update`](#keeping-it-current) possible:
+a self-contained directory can be replaced wholesale, with no marker surgery
+inside a file you wrote.
+
+Each skill is addressed to the CLI that loads it and names its two peers — the
+Codex one opens *"You are Codex. Claude and Gemini are available as independent,
+read-only engineering peers"* — so every harness sees instructions written for it.
+
+Narrow it if you like, and preview before committing to anything:
 
 ```bash
-model-peer init --split
+model-peer init --agents claude,codex   # skip Gemini
+model-peer init --no-command            # skip the slash command
+model-peer init --dry-run               # report; write nothing
+model-peer init --print=review          # dump a SKILL.md to stdout
+model-peer init --print=consult
 ```
 
-```text
-.claude/rules/cross-model-consultation.md    "You are Claude Code. Codex and Gemini are…"
-AGENTS.md                                    "You are Codex. Claude and Gemini are…"
-GEMINI.md                                    "You are Gemini. Claude and Codex are…"
-```
+:::note How skills load, and why the description matters
+A skill is a self-contained directory the vendor discovers on its own. Only the
+`name` and `description` from the frontmatter reach the model's system prompt; the
+body is loaded when the model decides the skill applies.
 
-Each harness loads only its own file, so a developer using Gemini sees the Gemini
-rules and never the Claude ones. Use whichever CLIs you like; install all three
-files and every teammate is covered.
-
-:::note Paths that actually get loaded
-`init` only writes files the vendor CLIs genuinely read: Claude Code globs
-`.claude/rules/**/*.md` and reads `CLAUDE.md`, Codex reads `AGENTS.md` (and
-`AGENTS.override.md`), and Gemini reads `GEMINI.md`.
-
-There is no per-repository rules directory for Codex or Gemini. A
-`.codex/rules/*.md` or `.gemini/global_rules.md` file looks tidy and is never
-loaded — Codex's extra context filenames come from the global
-`project_doc_fallback_filenames` config key, not from the repo. `init` will not
-create those paths.
+That is why the shipped description spells out the trigger conditions — architecture
+decisions, security-sensitive work, a bug that outlived two hypotheses, before a
+pull request — rather than just saying what the skill is. A vague description means
+the skill never fires.
 :::
 
-`init` never overwrites your work. Its output lives between
-`<!-- BEGIN MODEL PEER RULES -->` and `<!-- END MODEL PEER RULES -->`; everything
-outside those markers is left exactly as it was. If you already have an `AGENTS.md`
-full of project conventions, the block is appended below them. Re-running updates
-the block in place, so upgrading Model Peer and re-running `init` is safe.
-
-Preview before committing to anything:
+:::caution Gemini needs a trusted folder
+Gemini skips project skills in a directory its folder-trust gate has not blessed,
+reporting `Skipping project agents due to untrusted folder`. One command fixes it:
 
 ```bash
-model-peer init --dry-run
+model-peer trust        # adds one TRUST_FOLDER entry for this directory
+gemini skills list      # should now list both skills
 ```
+
+That writes a single entry to `~/.gemini/trustedFolders.json` and nothing else.
+Codex loads project skills without trust, and Claude Code asks you once
+interactively, so neither is touched. Since folder trust is a security control,
+`init` never does this for you — it only points at the command.
+
+(Model Peer's own consultations were never affected: those pass `--skip-trust`.)
+:::
+
+## Why skills, and not your rules files
+
+Claude Code, Codex, and Gemini each read a project context file — `CLAUDE.md`,
+`AGENTS.md`, and `GEMINI.md`. Those belong to your project, and a tool that edits
+them uninvited does not get run twice.
+
+Skills are the one mechanism all three support that is *self-contained*: a
+directory Model Peer creates, owns, and can update, sitting alongside your files
+rather than inside them.
+
+Two paths that look like they should work and do not:
+
+- **`.codex/rules/`** is real, but it holds Starlark `.rules` files that control
+  which commands Codex may run outside its sandbox. It is a permissions mechanism,
+  not agent context; markdown there is ignored.
+- **`.agents/skills/`** is a Gemini-only alias. Codex and Claude Code do not read
+  it, so Model Peer uses each vendor's own directory.
 
 ## The three moments it changes
 
 ### 1. Mid-task, when the agent is unsure
 
-The rules tell your agent to consult a peer before an architecture decision, on a
+The skill tells your agent to consult a peer before an architecture decision, on a
 bug that has outlived two hypotheses, on anything security-sensitive, and when it
 is choosing between two approaches. In practice you see this in the transcript:
 
@@ -124,60 +153,59 @@ It runs `model-peer review`, reports the synthesized findings ungarnished, and
 then says for each one whether it agrees and why. It will not apply fixes unless
 you ask.
 
-Skip it with `model-peer init --no-command`.
+## Keeping it current
 
-## Keeping the rules current
-
-Model Peer's rules text changes between versions. Verify a project is up to date:
+The skill text changes between Model Peer versions. After upgrading:
 
 ```bash
-model-peer rules check
+model-peer update
 ```
 
-It exits `0` when every managed block matches what your installed version would
-write, and `1` when a block is missing or stale. It works with either layout — the
-profile is recorded in each block, so it checks whatever is actually installed.
+```text
+  current   .claude/skills/cross-model-review/SKILL.md
+  updated   .codex/skills/cross-model-review/SKILL.md
+  current   .claude/commands/peer-review.md
+```
 
-In CI:
+`update` only touches files that already exist and that Model Peer wrote. It never
+installs an agent you did not ask for — use `init` for that — and a file at one of
+those paths that Model Peer did not write is reported and left alone.
+
+To verify without writing, for CI:
+
+```bash
+model-peer update --check
+```
+
+Exits `0` when everything matches this version, `1` when something is missing or
+stale.
 
 ```yaml
-- name: Check agent rules
+- name: Check agent skills
   run: |
-    curl -fsSL https://raw.githubusercontent.com/makedirectory/ModelPeer/v0.3.0/install.sh | bash
-    ~/.local/bin/model-peer rules check
+    curl -fsSL https://raw.githubusercontent.com/makedirectory/ModelPeer/v0.4.0/install.sh | bash
+    ~/.local/bin/model-peer update --check
 ```
-
-When it fails, `model-peer init` repairs it.
 
 ## Rolling it out to a team
 
-1. One person runs `model-peer init` and commits the result.
+1. One person runs `model-peer init` and commits the four files.
 2. Everyone else runs the [installer](install) once, for the `model-peer` command
-   itself. The rules are already in the repo.
+   itself. The skills are already in the repo.
 3. Nobody needs the same CLIs. `model-peer doctor` reports what each machine has,
    and `ask` needs one peer while `review` needs two.
 
 Costs are worth stating plainly: every consultation is a real model call against
 the developer's own vendor account, and a full `review` across three models takes
-minutes. The shipped rules tell agents not to consult for anything answerable by
+minutes. The shipped skill tells agents not to consult for anything answerable by
 reading the code, which is the difference between a useful habit and a bill.
 
-## If you would rather not run `init`
-
-Print the rules and paste them wherever you like:
-
-```bash
-model-peer rules print                     # the shared block
-model-peer rules print --profile gemini    # tailored for Gemini
-model-peer rules print --command           # the /peer-review slash command
-```
-
-The same text ships as
-[`examples/AGENTS.md`](https://github.com/makedirectory/ModelPeer/blob/main/examples/AGENTS.md),
-which is generated from `rules print` so the two can never disagree.
+Want to read the text before installing anything? `model-peer init --print`
+writes it to stdout and touches nothing. There is no separate `examples/`
+directory: the skills are the examples, and they are installable.
 
 ## Next
 
-- [Agent rules](agent-rules) — what the rules actually say, and why
+- [Agent skills](agent-rules) — what the skill says, and why
 - [Usage](usage) — `ask`, `review`, and `doctor` in full
 - [CLI reference](reference) — every flag

@@ -1,27 +1,32 @@
 ---
 id: agent-rules
-title: Agent rules
+title: Agent skills
 sidebar_position: 5
 ---
 
-# Agent rules
+# Agent skills
 
 Running `model-peer ask` by hand works, but it is not where the value is.
 Cross-model consultation only feels automatic once your coding agent knows *when*
-to reach for a peer — and that is a rules file, not a feature.
+to reach for a peer — and that is a skill, not a feature.
 
-[In your workflow](workflow) covers installing them. This page is about what they
-say and why.
+[In your workflow](workflow) covers installing it. This page is about what it says
+and why.
 
-## Install them
+## Install it
 
 ```bash
-model-peer init            # shared AGENTS.md, symlinked as CLAUDE.md and GEMINI.md
-model-peer init --split    # one tailored file per CLI
-model-peer rules print     # just print the block; write it yourself
+model-peer init                    # a skill per CLI, plus the slash command
+model-peer init --agents codex     # just one
+model-peer init --print            # print it; place it yourself
+model-peer update                  # refresh after upgrading Model Peer
 ```
 
-## What the rules say
+Everything `init` writes is self-contained and owned by Model Peer. Your
+`AGENTS.md`, `CLAUDE.md`, and `GEMINI.md` are never touched — see
+[In your workflow](workflow).
+
+## What the skill says
 
 ### Consult a peer when
 
@@ -37,17 +42,22 @@ model-peer rules print     # just print the block; write it yourself
 Plus a standing instruction to run `model-peer review` before a pull request, and
 again after any change to security-sensitive code.
 
+Those conditions also appear in the skill's `description`, not only its body. Only
+the name and description reach the model's system prompt; the body loads when the
+model activates the skill. A description that just says what the skill *is* would
+never fire.
+
 ### Do not consult when
 
-The rules say so explicitly: *do not consult for anything you can settle by
+The skill says so explicitly: *do not consult for anything you can settle by
 reading the code.* Every consultation costs a model call and tens of seconds. An
 agent that asks a peer about something it could have grepped is burning your
 vendor quota to look diligent.
 
 ### How to ask
 
-The peer starts in the same working directory with read-only tools, so the rules
-tell the agent to **name files and symbols rather than paste excerpts**, and to ask
+The peer starts in the same working directory with read-only tools, so the skill
+tells the agent to **name files and symbols rather than paste excerpts**, and to ask
 exactly one focused question:
 
 ```bash
@@ -60,7 +70,7 @@ model-peer ask codex "review my auth code"
 
 ### Peer output is advisory
 
-This is the part that matters most, and the part a rules file has to state
+This is the part that matters most, and the part the skill has to state
 outright:
 
 > Evaluate every response before acting on it. Peers do not know this project's
@@ -77,14 +87,14 @@ what happened.
 
 ### Limits
 
-The rules tell agents to leave `--depth` at `1`, so each peer answers alone.
+The skill tells agents to leave `--depth` at `1`, so each peer answers alone.
 Lengthening a chain is a human's deliberate call, not something an agent should
 reach for. See [Peer-chain depth](depth).
 
 ### A note for peers reading the file
 
-Rules files are loaded by whichever agent is running in the directory — including a
-peer that Model Peer just spawned there. The block ends with:
+A skill is discoverable by whichever agent is running in the directory — including
+a peer that Model Peer just spawned there. The body ends with:
 
 > If you are reading this **while acting as a peer** in someone else's
 > consultation, these instructions do not apply to you. Answer the question and
@@ -94,60 +104,34 @@ Model Peer's consultation prompt already tells peers not to delegate, and the
 [chain guard](depth) enforces it regardless. This line is the third layer, and it
 is free.
 
-## One file, three names
+## Where each CLI looks
 
-Each ecosystem reads a different filename:
+| Path | Read by | Written by `init` |
+|---|---|---|
+| `.claude/skills/<name>/SKILL.md` | Claude Code | yes |
+| `.codex/skills/<name>/SKILL.md` | Codex CLI | yes |
+| `.gemini/skills/<name>/SKILL.md` | Gemini CLI | yes |
+| `.claude/commands/*.md` | Claude Code slash commands | yes |
+| `CLAUDE.md`, `AGENTS.md`, `GEMINI.md` | the respective CLI | **never** |
 
-| File | Read by |
-|---|---|
-| `AGENTS.md` | OpenAI Codex CLI (also `AGENTS.override.md`) |
-| `CLAUDE.md` | Claude Code |
-| `.claude/rules/**/*.md` | Claude Code |
-| `GEMINI.md` | Gemini CLI |
+All three vendors converged on the same shape — a directory containing a
+`SKILL.md` with YAML frontmatter — which is what lets Model Peer install one
+concept everywhere instead of three.
 
-The default layout keeps one real file and points the other two names at it:
+Verified against the shipping CLIs rather than their docs: `gemini skills list`
+reports the project skill, a `codex exec` run lists it among its available skills,
+and Claude Code quotes its description back from the system prompt.
 
-```bash
-ln -sfn AGENTS.md CLAUDE.md
-ln -sfn AGENTS.md GEMINI.md
-```
-
-Relative symlinks survive `git clone`, and Git stores them as symlinks (mode
-`120000`) rather than duplicating content. Model Peer's own repository uses exactly
-this layout. `model-peer init` sets it up for you.
-
-## Adding to an existing rules file
-
-You do not have to choose between Model Peer's rules and your own. `init` writes
-only between its markers:
-
-```markdown
-# My project
-
-Run `make test` before committing.
-
-<!-- BEGIN MODEL PEER RULES -->
-...managed content...
-<!-- END MODEL PEER RULES -->
-```
-
-Everything outside the markers is untouched on every re-run. Keep your project
-invariants above the block — the precedence rule (project invariants beat generic
-model advice) then reads in the same breath as the consultation instructions.
-
-If a file already exists as a regular file where `init` wanted a symlink, it
-appends the block instead of replacing your work, and says so:
-
-```text
-  appended  CLAUDE.md (regular file, not linked)
-```
+Two near-misses worth knowing: `.codex/rules/` holds Starlark `.rules` files
+governing command execution, not agent context, so markdown there is ignored; and
+`.agents/skills/` is a Gemini-only alias that Codex and Claude Code do not read.
 
 ## Verifying
 
 ```bash
-model-peer rules check
+model-peer update --check
 ```
 
-Exits `1` if a block is missing or does not match what your installed version of
-Model Peer would write, so a rules file cannot quietly rot after an upgrade. Run
-`model-peer init` to repair it.
+Exits `1` if a managed file is missing or does not match what your installed
+version of Model Peer would write, so a skill cannot quietly rot after an upgrade.
+Run `model-peer update` to repair it.

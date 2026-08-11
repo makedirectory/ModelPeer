@@ -2,6 +2,102 @@
 
 All notable changes to Model Peer are documented here.
 
+## 0.4.0 - 2026-08-10
+
+Setup became a skill, and the chain guards were brought in line with what the
+documentation already promised.
+
+In 0.3.0 `model-peer init` wrote the developer's `AGENTS.md` and symlinked
+`CLAUDE.md` and `GEMINI.md` to it. That was the wrong shape: a tool that
+rearranges someone's root context files uninvited does not get run twice. It now
+installs self-contained agent skills instead, in the directory each vendor set
+aside for them, and touches nothing else.
+
+```text
+.claude/skills/cross-model-review/SKILL.md      .claude/commands/peer-review.md
+.claude/skills/cross-model-consult/SKILL.md     .claude/commands/peer-ask.md
+.codex/skills/...                               (both, per CLI)
+.gemini/skills/...
+```
+
+### Added
+
+- `model-peer update` refreshes the installed files to match the running version,
+  and `--check` reports drift and exits `1` without writing, for CI. It only
+  touches files that already exist and that Model Peer wrote, and never installs
+  an agent that is not already present, so it cannot quietly widen a repository.
+- `model-peer trust` marks a directory as trusted for Gemini CLI, which otherwise
+  refuses to load project skills and reports none at all. It adds one
+  `TRUST_FOLDER` entry to `~/.gemini/trustedFolders.json` and nothing else. Codex
+  loads project skills without trust and Claude Code prompts interactively, so
+  neither is modified. Folder trust is a security control, so `init` never does
+  this for you.
+- `model-peer _delegate <model> "<question>"`, the only command a delegating peer
+  is authorized to run. It inherits every limit, accepts no options, and cannot
+  reach `init`, `update`, `review`, `trust`, or `doctor`.
+- Two skills, not one. `cross-model-review` cross-checks a diff across the panel;
+  `cross-model-consult` gets one peer's opinion on one question. They fire on
+  different cues, and one description covering both triggers neither well.
+- `model-peer init --print[=WHAT]` writes a skill or slash command to stdout and
+  touches nothing. `--dry-run` previews the whole install.
+- `model-peer doctor` reports which skills the current project has installed.
+
+### Changed
+
+- **`init` never reads, writes, appends to, or symlinks `AGENTS.md`,
+  `CLAUDE.md`, or `GEMINI.md`.** Everything it writes is a file Model Peer owns
+  outright, which is also what makes `update` tractable: managed files are
+  compared and replaced whole, with no marker surgery inside a foreign file.
+- **`review` no longer accepts `--depth`.** Reviewers and the synthesizer are
+  always leaves. Reviewers that can consult one another are not independent
+  observations, which is the entire value of the panel — and the review prompt
+  already told reviewers to consult no one, contradicting the outer consultation
+  prompt above depth 1. `ask` explores; `review` cross-checks.
+- The skill `description` carries the trigger conditions rather than a summary.
+  Only `name` and `description` reach the model's system prompt; the body loads
+  on activation, so a description that says what a skill *is* never fires it.
+- **This project runs `model-peer init` on itself.** The skills under `.claude/`,
+  `.codex/`, and `.gemini/` are the real installed artifacts, live in the
+  repository that produces them. `make sync` refreshes them and `make check-sync`
+  fails the build when they drift, so dogfooding and drift detection are the same
+  files. `examples/` is removed as redundant, along with the hand-written
+  `.claude/rules/cross-model-consultation.md` that had already drifted from it.
+- `model-peer rules <install|print|check>` is replaced by `init` and `update`.
+- The README heading is now "By default, there is no chat between models", since
+  `ask --depth` genuinely does let one model consume another's answer.
+
+### Fixed
+
+- **A model could appear twice in one chain.** The guard compared only the last
+  entry of `MODEL_PEER_STACK`, so `claude → claude` was blocked while
+  `claude → codex → claude` was permitted — a model reviewing its own work one hop
+  removed. Membership is now tested across the whole chain.
+- **A peer could raise the ceiling it inherited.** `--depth` beat the inherited
+  `MODEL_PEER_MAX_DEPTH`, contradicting "the limit propagates down the chain".
+  Inside a chain the inherited value is now a cap: lowerable, never raisable.
+- **Synthesis was unbounded.** Every reviewer was bounded by `--timeout`, but the
+  synthesis call omitted the argument and fell through to no limit, so a hung
+  synthesizer could hang the run after every reviewer had succeeded.
+- **A delegating Claude peer was granted more than the prompt allowed.** The
+  grant was `Bash(model-peer:*)`, and `model-peer` stopped being a read-only
+  executable once `init` and `update` existed. Delegation now grants
+  `Bash(model-peer _delegate:*)` only, so the capability matches the prompt.
+- Temporary directories are removed on interrupt, not only on the normal path.
+  The review context holds the diff and the contents of untracked files.
+- Corrects a claim made in 0.3.0: `.codex/rules/` **is** a real directory Codex
+  reads, but it holds Starlark `.rules` files governing which commands may run
+  outside the sandbox — a permissions mechanism, not agent context. Markdown
+  there is still ignored, but not for the reason previously documented.
+  `.agents/skills/` is a Gemini-only alias that Codex and Claude Code do not read.
+
+Skill discovery was verified against the shipping CLIs rather than their
+documentation: `gemini skills list` reports the installed skills, a `codex exec`
+run lists them among its available skills, and Claude Code quotes their
+descriptions back from the system prompt.
+
+Thanks to the reviewer who worked through `main` as a maintainer would; four of
+the fixes above came from that read.
+
 ## 0.3.0 - 2026-08-10
 
 Repository setup and orchestration robustness. `model-peer init` closes the gap

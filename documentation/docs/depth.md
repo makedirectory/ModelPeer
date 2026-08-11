@@ -103,7 +103,7 @@ model-peer: Raise it with --depth N (max 10) or MODEL_PEER_MAX_DEPTH.
 
 ### Self-consultation
 
-A model is never consulted by itself, at any depth. Cross-model review that is
+A model never appears twice in one chain, at any depth, so no model reviews its own work even one hop removed. Cross-model review that is
 secretly self-review would defeat the point — without this guard, `--depth 3` would
 permit `claude -> claude -> claude`.
 
