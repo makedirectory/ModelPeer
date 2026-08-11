@@ -16,10 +16,14 @@ say and why.
 ## Install them
 
 ```bash
-model-peer init            # shared AGENTS.md, symlinked as CLAUDE.md and GEMINI.md
-model-peer init --split    # one tailored file per CLI
-model-peer rules print     # just print the block; write it yourself
+model-peer init                                # .claude/rules/ + the slash command
+model-peer init --agents claude,codex,gemini   # also AGENTS.md and GEMINI.md
+model-peer rules print --profile codex         # just print it; place it yourself
 ```
+
+`init` writes only Model Peer's own files by default. `AGENTS.md`, `CLAUDE.md`, and
+`GEMINI.md` are yours, and are edited only when you name their CLI — see
+[In your workflow](workflow).
 
 ## What the rules say
 
@@ -94,32 +98,22 @@ Model Peer's consultation prompt already tells peers not to delegate, and the
 [chain guard](depth) enforces it regardless. This line is the third layer, and it
 is free.
 
-## One file, three names
+## Where each CLI looks
 
-Each ecosystem reads a different filename:
+| File | Read by | Written by `init` |
+|---|---|---|
+| `.claude/rules/**/*.md` | Claude Code | yes, by default |
+| `.claude/commands/*.md` | Claude Code slash commands | yes, by default |
+| `AGENTS.md` | Codex CLI (also `AGENTS.override.md`) | only with `--agents codex` |
+| `GEMINI.md` | Gemini CLI | only with `--agents gemini` |
+| `CLAUDE.md` | Claude Code | never |
 
-| File | Read by |
-|---|---|
-| `AGENTS.md` | OpenAI Codex CLI (also `AGENTS.override.md`) |
-| `CLAUDE.md` | Claude Code |
-| `.claude/rules/**/*.md` | Claude Code |
-| `GEMINI.md` | Gemini CLI |
+Only Claude Code has a per-repository rules directory, which is why it is the only
+one Model Peer can wire up without touching a file you own.
 
-The default layout keeps one real file and points the other two names at it:
+## Adding to a file you own
 
-```bash
-ln -sfn AGENTS.md CLAUDE.md
-ln -sfn AGENTS.md GEMINI.md
-```
-
-Relative symlinks survive `git clone`, and Git stores them as symlinks (mode
-`120000`) rather than duplicating content. Model Peer's own repository uses exactly
-this layout. `model-peer init` sets it up for you.
-
-## Adding to an existing rules file
-
-You do not have to choose between Model Peer's rules and your own. `init` writes
-only between its markers:
+`init` writes only between its markers:
 
 ```markdown
 # My project
@@ -135,12 +129,8 @@ Everything outside the markers is untouched on every re-run. Keep your project
 invariants above the block — the precedence rule (project invariants beat generic
 model advice) then reads in the same breath as the consultation instructions.
 
-If a file already exists as a regular file where `init` wanted a symlink, it
-appends the block instead of replacing your work, and says so:
-
-```text
-  appended  CLAUDE.md (regular file, not linked)
-```
+A symlinked `GEMINI.md` or `CLAUDE.md` is refused rather than written through,
+since that would rewrite the linked file under a profile meant for another model.
 
 ## Verifying
 

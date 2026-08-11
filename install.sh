@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="0.3.0"
+VERSION="0.4.0"
 BIN_DIR="${MODEL_PEER_BIN_DIR:-$HOME/.local/bin}"
 DO_SETUP=0
 INSTALL_DEPS=0
@@ -9,7 +9,7 @@ DO_LOGIN=0
 
 usage() {
   cat <<'USAGE'
-Model Peer installer v0.3.0
+Model Peer installer v0.4.0
 
 Usage:
   ./install.sh [options]
@@ -83,12 +83,12 @@ write_commands() {
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="0.3.0"
+VERSION="0.4.0"
 PROGRAM="model-peer"
 
 usage() {
   cat <<'USAGE'
-Model Peer v0.3.0 — cross-model peer review for coding agents.
+Model Peer v0.4.0 — cross-model peer review for coding agents.
 
 Usage:
   model-peer ask claude "<focused question>"
@@ -119,9 +119,10 @@ Review options:
   --strict               Refuse to synthesize unless every reviewer completed
 
 Init options:
-  --split                One tailored rules file per CLI instead of a shared
-                         AGENTS.md with CLAUDE.md and GEMINI.md symlinked to it
-  --agents LIST          Comma-separated: claude, codex, gemini (default: all)
+  --agents LIST          Comma-separated: claude, codex, gemini (default: claude).
+                         Only Claude Code has a per-repo rules directory; codex
+                         and gemini opt in to a managed block in your AGENTS.md
+                         and GEMINI.md respectively.
   --no-command           Skip the Claude Code /peer-review slash command
   --dry-run              Report what would change; write nothing
 
@@ -987,6 +988,11 @@ USAGE
 # .gemini/global_rules.md is inert — Codex's extra context filenames come from
 # the global project_doc_fallback_filenames key, not from the repo — so init
 # never creates one. Verify before adding a path here.
+#
+# That asymmetry drives the default. .claude/rules/ and .claude/commands/ are
+# Model Peer's to write. AGENTS.md and GEMINI.md are the developer's, and are
+# only touched when named in --agents. Adding a provider whose only reachable
+# path is a file the developer owns means adding it as opt-in, not as default.
 # ---------------------------------------------------------------------------
 
 RULES_BEGIN='<!-- BEGIN MODEL PEER RULES -->'
@@ -996,8 +1002,8 @@ RULES_COMMAND_FILE='.claude/commands/peer-review.md'
 RULES_DRY_RUN=0
 RULES_FORCE=0
 
-# Profiles: 'shared' is model-agnostic, for one file every CLI reads. The others
-# address one CLI directly and name its two peers, for the --split layout.
+# Profiles: each addresses one CLI directly and names its two peers. 'shared' is
+# model-agnostic, for a developer pasting one block into a file every CLI reads.
 # Backticks here are literal Markdown, not command substitution.
 # shellcheck disable=SC2016
 rules_lead() {
@@ -1162,6 +1168,14 @@ rules_apply_block() {
   local file="$1" profile="$2" new tmp blk
   new="$(rules_block "$profile")"
 
+  # A symlinked CLAUDE.md/GEMINI.md is a common layout, and editing it would
+  # silently rewrite whatever it points at — usually AGENTS.md, under a profile
+  # meant for a different model. Refuse unless told otherwise.
+  if [[ -L "$file" && $RULES_FORCE -eq 0 ]]; then
+    printf 'symlink'
+    return
+  fi
+
   if [[ ! -e "$file" ]]; then
     if (( RULES_DRY_RUN == 0 )); then
       mkdir -p "$(dirname "$file")"
@@ -1201,32 +1215,6 @@ rules_apply_block() {
     printf '\n%s\n' "$new" >> "$file"
   fi
   printf 'appended'
-}
-
-rules_apply_link() {
-  local link="$1" target="$2"
-  if [[ -L "$link" ]]; then
-    if [[ "$(readlink "$link")" == "$target" ]]; then
-      printf 'current'
-      return
-    fi
-    if (( RULES_FORCE == 1 )); then
-      (( RULES_DRY_RUN == 1 )) || ln -sfn "$target" "$link"
-      printf 'relinked'
-      return
-    fi
-    printf 'conflict'
-    return
-  fi
-  if [[ -e "$link" ]]; then
-    printf 'regular'
-    return
-  fi
-  if (( RULES_DRY_RUN == 0 )); then
-    mkdir -p "$(dirname "$link")"
-    ln -s "$target" "$link"
-  fi
-  printf 'linked'
 }
 
 rules_apply_command() {
@@ -1300,38 +1288,55 @@ Usage:
   model-peer init [options]            # same as: model-peer rules install
   model-peer rules install [options]
 
-Writes the cross-model consultation rules into a project, so the coding agent you
-work with knows when to reach for a peer. Re-running refreshes the managed block
-and leaves everything around it alone.
+Installs the cross-model consultation rules so the coding agent you work with
+knows when to reach for a peer.
+
+By default it writes only files Model Peer owns, and never touches yours:
+
+  .claude/rules/cross-model-consultation.md   the rules (Claude Code loads it)
+  .claude/commands/peer-review.md             the /peer-review slash command
+
+Codex and Gemini have no per-repository rules directory. The only files they read
+are AGENTS.md and GEMINI.md, which belong to you, so Model Peer does not write
+them unless you ask for it by name:
+
+  model-peer init --agents claude,codex,gemini
+
+Even then it confines itself to a marked block and never rewrites a line outside
+it. To stay fully in control, print the text and place it yourself:
+
+  model-peer rules print --profile codex >> AGENTS.md
 
 Options:
-  --split          One tailored file per CLI, each naming that CLI's two peers:
-                     claude  -> .claude/rules/cross-model-consultation.md
-                     codex   -> AGENTS.md
-                     gemini  -> GEMINI.md
-                   Default instead writes one shared AGENTS.md and symlinks
-                   CLAUDE.md and GEMINI.md to it, so all three read one file.
-  --agents LIST    Comma-separated: claude, codex, gemini (default: all three,
-                   so a teammate on a different CLI still gets the rules)
-  --no-command     Skip .claude/commands/peer-review.md (the /peer-review
-                   slash command for Claude Code)
+  --agents LIST    Comma-separated: claude, codex, gemini (default: claude).
+                   codex adds a managed block to AGENTS.md; gemini adds one to
+                   GEMINI.md. Both are your files, hence opt-in.
+  --no-command     Skip .claude/commands/peer-review.md
   --dir DIR        Target directory (default: the Git root, else the cwd)
   --dry-run        Report what would change; write nothing
-  --force          Overwrite files Model Peer owns outright — the slash command,
-                   and a CLAUDE.md/GEMINI.md symlink pointing elsewhere. Content
-                   outside a managed block in a regular file is never rewritten.
+  --force          Overwrite the slash command if it exists but is not Model
+                   Peer's, and write through a symlinked AGENTS.md/GEMINI.md.
+                   Content outside a managed block is never rewritten.
   -h, --help       This help
 USAGE
 }
 
+# Defaults to Claude alone, because .claude/rules/ is the only per-repository
+# rules directory any of the three CLIs actually loads. Codex and Gemini can only
+# be reached through AGENTS.md and GEMINI.md, which are the developer's own files;
+# editing those uninvited is intrusive, so it takes an explicit --agents.
 cmd_rules_install() {
-  local split=0 agents='claude,codex,gemini' dir='' want_command=1 item
+  local agents='claude' dir='' want_command=1
   RULES_DRY_RUN=0
   RULES_FORCE=0
 
   while (( $# > 0 )); do
     case "$1" in
-      --split) split=1 ;;
+      --split)
+        err '--split was removed: init now writes only Model Peer'"'"'s own files.'
+        err 'Use --agents claude,codex,gemini to opt in to AGENTS.md and GEMINI.md.'
+        return 2
+        ;;
       --agents)
         shift; (( $# > 0 )) || { err '--agents requires a value.'; return 2; }
         agents="$1"
@@ -1365,47 +1370,18 @@ cmd_rules_install() {
   printf '  target    %s\n\n' "$root"
 
   local status
-  if (( split == 1 )); then
-    if rules_in_list claude "$agents"; then
-      status="$(rules_apply_block "$root/$RULES_CLAUDE_FILE" claude)"
-      rules_report "$status" "$RULES_CLAUDE_FILE"
-    fi
-    if rules_in_list codex "$agents"; then
-      status="$(rules_apply_block "$root/AGENTS.md" codex)"
-      rules_report "$status" 'AGENTS.md'
-    fi
-    if rules_in_list gemini "$agents"; then
-      status="$(rules_apply_block "$root/GEMINI.md" gemini)"
-      rules_report "$status" 'GEMINI.md'
-    fi
-  else
-    # AGENTS.md is the anchor in shared mode even when Codex is not selected:
-    # it is the file the symlinks point at.
-    status="$(rules_apply_block "$root/AGENTS.md" shared)"
-    rules_report "$status" 'AGENTS.md'
 
-    local name
-    for name in CLAUDE.md GEMINI.md; do
-      case "$name" in
-        CLAUDE.md) rules_in_list claude "$agents" || continue ;;
-        GEMINI.md) rules_in_list gemini "$agents" || continue ;;
-      esac
-      status="$(rules_apply_link "$root/$name" 'AGENTS.md')"
-      case "$status" in
-        regular)
-          # A real file with the developer's own rules in it. Add the block
-          # rather than replacing their work with a symlink.
-          status="$(rules_apply_block "$root/$name" shared)"
-          rules_report "$status" "$name (regular file, not linked)"
-          ;;
-        conflict)
-          rules_report 'skipped' "$name (symlink to $(readlink "$root/$name"); --force to relink)"
-          ;;
-        *)
-          rules_report "$status" "$name -> AGENTS.md"
-          ;;
-      esac
-    done
+  if rules_in_list claude "$agents"; then
+    status="$(rules_apply_block "$root/$RULES_CLAUDE_FILE" claude)"
+    rules_report "$status" "$RULES_CLAUDE_FILE"
+  fi
+
+  # Opt-in only: these are the developer's files, not Model Peer's.
+  if rules_in_list codex "$agents"; then
+    rules_report_context "$root" AGENTS.md codex
+  fi
+  if rules_in_list gemini "$agents"; then
+    rules_report_context "$root" GEMINI.md gemini
   fi
 
   if (( want_command == 1 )) && rules_in_list claude "$agents"; then
@@ -1421,12 +1397,44 @@ cmd_rules_install() {
     return 0
   fi
 
-  printf '\nCommit these files so your team gets them too.\n'
+  # Say plainly what was left alone, so nobody assumes Codex and Gemini were
+  # wired up when they were not.
+  if ! rules_in_list codex "$agents" || ! rules_in_list gemini "$agents"; then
+    printf '\nUntouched: '
+    local left=''
+    rules_in_list codex "$agents"  || left='AGENTS.md (Codex)'
+    rules_in_list gemini "$agents" || left="${left:+$left, }GEMINI.md (Gemini)"
+    printf '%s\n' "$left"
+    printf 'Those are your files and the only ones those CLIs read. To include them:\n'
+    printf '  model-peer init --agents claude,codex,gemini\n'
+    printf 'Or place the text yourself:\n'
+    printf '  model-peer rules print --profile codex >> AGENTS.md\n'
+  fi
+
+  printf '\nCommit what was written so your team gets it too.\n'
   printf 'Next:  model-peer doctor        # confirm at least two CLIs are installed\n'
   printf '       model-peer review        # cross-model review of the current diff\n'
   if (( want_command == 1 )) && rules_in_list claude "$agents"; then
     printf '       /peer-review             # the same, from inside Claude Code\n'
   fi
+}
+
+# Writing into a developer's own context file is the intrusive case, so it is
+# reported in more detail than Model Peer's own files.
+rules_report_context() {
+  local root="$1" name="$2" profile="$3" status
+  status="$(rules_apply_block "$root/$name" "$profile")"
+  case "$status" in
+    symlink)
+      rules_report 'skipped' "$name (symlink to $(readlink "$root/$name"); --force to write through it)"
+      ;;
+    appended)
+      rules_report 'appended' "$name (your content above is untouched)"
+      ;;
+    *)
+      rules_report "$status" "$name"
+      ;;
+  esac
 }
 
 cmd_rules_print() {
@@ -1463,8 +1471,8 @@ USAGE
 }
 
 # Layout-agnostic: check whatever is installed rather than assuming a layout. The
-# profile is read back out of each managed block, so a --split repo and a shared
-# repo both verify correctly.
+# profile is read back out of each managed block, so a repo that took only the
+# Claude rules and one that also opted into AGENTS.md both verify correctly.
 cmd_rules_check() {
   local dir=''
   while (( $# > 0 )); do

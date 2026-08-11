@@ -138,7 +138,7 @@ and `@@PEER_B@@` placeholders substituted afterwards — quoted so the Markdown
 backticks stay literal, substituted with `#` as the sed delimiter because the peer
 spec contains `|`.
 
-Two invariants:
+Three invariants:
 
 1. **Only write paths a vendor CLI actually loads.** Claude Code globs
    `.claude/rules/**/*.md` and reads `CLAUDE.md`; Codex reads `AGENTS.md` and
@@ -147,11 +147,18 @@ Two invariants:
    are inert, since Codex's extra context filenames come from the global
    `project_doc_fallback_filenames` key. Verify against the shipping CLI before
    adding a path.
-2. **Never rewrite content outside the markers.** Everything between
+2. **Default to Model Peer's own files only.** `.claude/rules/` and
+   `.claude/commands/` are ours to write. `AGENTS.md`, `CLAUDE.md`, and
+   `GEMINI.md` belong to the developer, and `init` touches them only when the
+   matching CLI is named in `--agents`. `CLAUDE.md` is never written at all, and
+   no symlinks are ever created — a tool that rearranges someone's root context
+   files uninvited will not be run twice. If you add a provider whose only
+   reachable path is a file the developer owns, it goes in as opt-in.
+3. **Never rewrite content outside the markers.** Everything between
    `<!-- BEGIN MODEL PEER RULES -->` and `<!-- END MODEL PEER RULES -->` is
-   Model Peer's; everything else belongs to the developer. `--force` relinks
-   symlinks and replaces the slash command, and still never touches a regular
-   file's own content.
+   Model Peer's; everything else belongs to the developer. A symlinked context
+   file is refused rather than written through, since that would edit the linked
+   file under a profile meant for a different model.
 
 The profile (`shared`, `claude`, `codex`, `gemini`) is recorded in the managed
 header comment, which is how `rules check` knows what to compare a file against

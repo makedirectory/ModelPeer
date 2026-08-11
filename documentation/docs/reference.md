@@ -15,8 +15,7 @@ command | model-peer ask <claude|codex|gemini> [--depth N] [--timeout S]
 model-peer review [--models LIST] [--synthesizer MODEL] [--depth N]
                   [--timeout S] [--strict] ["focus"]
 
-model-peer init [--split] [--agents LIST] [--no-command] [--dir DIR]
-                [--dry-run] [--force]
+model-peer init [--agents LIST] [--no-command] [--dir DIR] [--dry-run] [--force]
 model-peer rules install [same options as init]
 model-peer rules print [--profile shared|claude|codex|gemini] [--command]
 model-peer rules check [--dir DIR]
@@ -71,30 +70,34 @@ shorthand for `model-peer rules install`. See [In your workflow](workflow).
 
 | Option | Description |
 |---|---|
-| `--split` | One tailored file per CLI instead of a shared `AGENTS.md` with `CLAUDE.md` and `GEMINI.md` symlinked to it |
-| `--agents LIST` | Comma-separated: `claude`, `codex`, `gemini` (default: all three) |
+| `--agents LIST` | Comma-separated: `claude`, `codex`, `gemini` (default: `claude`) |
 | `--no-command` | Skip `.claude/commands/peer-review.md` (the `/peer-review` slash command) |
 | `--dir DIR` | Target directory (default: the Git root, else the cwd) |
 | `--dry-run` | Report what would change; write nothing |
-| `--force` | Overwrite files Model Peer owns outright — the slash command, and a `CLAUDE.md`/`GEMINI.md` symlink pointing elsewhere |
+| `--force` | Overwrite a slash command that is not Model Peer's, and write through a symlinked `AGENTS.md`/`GEMINI.md` |
 | `-h`, `--help` | Usage |
 
-Files written, by layout:
+Files written:
 
-| | Default | `--split` |
+| Agent | File | Default |
 |---|---|---|
-| Claude Code | `CLAUDE.md` → `AGENTS.md` | `.claude/rules/cross-model-consultation.md` |
-| Codex CLI | `AGENTS.md` | `AGENTS.md` |
-| Gemini CLI | `GEMINI.md` → `AGENTS.md` | `GEMINI.md` |
-| Slash command | `.claude/commands/peer-review.md` | `.claude/commands/peer-review.md` |
+| `claude` | `.claude/rules/cross-model-consultation.md` | yes |
+| `claude` | `.claude/commands/peer-review.md` | yes, unless `--no-command` |
+| `codex` | `AGENTS.md` | **no** — opt in with `--agents codex` |
+| `gemini` | `GEMINI.md` | **no** — opt in with `--agents gemini` |
+
+`CLAUDE.md` is never written, and no symlinks are created.
+
+Claude Code is the only one of the three with a per-repository rules directory, so
+it is the only one Model Peer can wire up without editing a file you own. Codex
+reads `AGENTS.md` and Gemini reads `GEMINI.md`; those are yours, hence opt-in.
+There is no per-repo rules directory for either, so `init` never creates `.codex/`
+or `.gemini/` — files there are inert.
 
 Content lives between `<!-- BEGIN MODEL PEER RULES -->` and
 `<!-- END MODEL PEER RULES -->`. Everything outside those markers is never
-rewritten, so re-running is safe and idempotent. `--force` never destroys a regular
-file's contents; it only relinks symlinks and replaces the slash command.
-
-`init` writes only paths the vendor CLIs actually load. There is no per-repository
-rules directory for Codex or Gemini, so it never creates `.codex/` or `.gemini/`.
+rewritten, so re-running is safe and idempotent. A symlinked context file is
+refused rather than written through, unless `--force`.
 
 ## `rules print`
 

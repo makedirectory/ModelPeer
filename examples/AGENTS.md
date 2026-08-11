@@ -1,5 +1,5 @@
 <!-- BEGIN MODEL PEER RULES -->
-<!-- Managed by `model-peer init` (v0.3.0, profile: shared). Re-run to update; edit outside this block. -->
+<!-- Managed by `model-peer init` (v0.4.0, profile: shared). Re-run to update; edit outside this block. -->
 
 ## Cross-model peer review
 

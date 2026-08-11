@@ -20,55 +20,83 @@ model-peer init
 
 ## What `init` writes
 
-By default, one shared rules file that all three CLIs read:
+Only files Model Peer owns:
 
 ```text
-AGENTS.md                        the rules (Codex reads this)
-CLAUDE.md -> AGENTS.md           symlink (Claude Code)
-GEMINI.md -> AGENTS.md           symlink (Gemini CLI)
-.claude/commands/peer-review.md  the /peer-review slash command
+.claude/rules/cross-model-consultation.md   the rules (Claude Code loads it)
+.claude/commands/peer-review.md             the /peer-review slash command
 ```
 
-Git stores those symlinks as symlinks (mode `120000`), so they survive `git clone`
-and cannot drift apart. Commit all four and your teammates get the same behavior
-without doing anything.
+**Your `AGENTS.md`, `CLAUDE.md`, and `GEMINI.md` are not touched**, and no symlinks
+are created. Commit the two files above and your teammates get the same behavior.
 
-Prefer one tailored file per CLI — each addressing that model directly and naming
-its two peers?
+:::note Why only Claude Code, by default
+Claude Code is the only one of the three with a per-repository rules directory. It
+globs `.claude/rules/**/*.md`, so Model Peer can add a file of its own and be
+loaded automatically without editing anything of yours.
 
-```bash
-model-peer init --split
-```
+Codex and Gemini have no equivalent. The only per-repo files they read are
+`AGENTS.md` (Codex, plus `AGENTS.override.md`) and `GEMINI.md` (Gemini) — and those
+are yours. A `.codex/rules/*.md` or `.gemini/global_rules.md` file looks like it
+should work and is never loaded; Codex's extra context filenames come from the
+global `project_doc_fallback_filenames` config key, not from the repository.
 
-```text
-.claude/rules/cross-model-consultation.md    "You are Claude Code. Codex and Gemini are…"
-AGENTS.md                                    "You are Codex. Claude and Gemini are…"
-GEMINI.md                                    "You are Gemini. Claude and Codex are…"
-```
-
-Each harness loads only its own file, so a developer using Gemini sees the Gemini
-rules and never the Claude ones. Use whichever CLIs you like; install all three
-files and every teammate is covered.
-
-:::note Paths that actually get loaded
-`init` only writes files the vendor CLIs genuinely read: Claude Code globs
-`.claude/rules/**/*.md` and reads `CLAUDE.md`, Codex reads `AGENTS.md` (and
-`AGENTS.override.md`), and Gemini reads `GEMINI.md`.
-
-There is no per-repository rules directory for Codex or Gemini. A
-`.codex/rules/*.md` or `.gemini/global_rules.md` file looks tidy and is never
-loaded — Codex's extra context filenames come from the global
-`project_doc_fallback_filenames` config key, not from the repo. `init` will not
-create those paths.
+So wiring up Codex and Gemini means writing into your files, and Model Peer will
+not do that unless you ask for it by name.
 :::
 
-`init` never overwrites your work. Its output lives between
-`<!-- BEGIN MODEL PEER RULES -->` and `<!-- END MODEL PEER RULES -->`; everything
-outside those markers is left exactly as it was. If you already have an `AGENTS.md`
-full of project conventions, the block is appended below them. Re-running updates
-the block in place, so upgrading Model Peer and re-running `init` is safe.
+## Including Codex and Gemini
 
-Preview before committing to anything:
+Name them explicitly:
+
+```bash
+model-peer init --agents claude,codex,gemini
+```
+
+```text
+  current   .claude/rules/cross-model-consultation.md
+  appended  AGENTS.md (your content above is untouched)
+  created   GEMINI.md
+  current   .claude/commands/peer-review.md (/peer-review)
+```
+
+Each file is tailored to the model that reads it — the Codex block opens "You are
+Codex. Claude and Gemini are installed alongside you…" — so every harness sees
+rules addressed to it and never to the others.
+
+Even opted in, `init` confines itself to a marked region:
+
+```markdown
+# My project
+
+Run `make test` before committing.
+
+<!-- BEGIN MODEL PEER RULES -->
+...managed content...
+<!-- END MODEL PEER RULES -->
+```
+
+Everything outside those markers is left exactly as it was, on every re-run. An
+existing `AGENTS.md` gets the block appended below your own rules; upgrading Model
+Peer and re-running updates the block in place.
+
+If `GEMINI.md` is a symlink to `AGENTS.md` — a common way to share one file across
+CLIs — `init` refuses rather than writing through it, since that would rewrite the
+linked file under a profile meant for a different model.
+
+## Staying fully in control
+
+If you would rather place the text yourself, `init` is optional. Print it and put
+it wherever you like:
+
+```bash
+model-peer rules print --profile codex >> AGENTS.md
+model-peer rules print --profile gemini >> GEMINI.md
+model-peer rules print                       # model-agnostic version
+model-peer rules print --command             # the /peer-review slash command
+```
+
+Preview what `init` would do without writing anything:
 
 ```bash
 model-peer init --dry-run
@@ -143,7 +171,7 @@ In CI:
 ```yaml
 - name: Check agent rules
   run: |
-    curl -fsSL https://raw.githubusercontent.com/makedirectory/ModelPeer/v0.3.0/install.sh | bash
+    curl -fsSL https://raw.githubusercontent.com/makedirectory/ModelPeer/v0.4.0/install.sh | bash
     ~/.local/bin/model-peer rules check
 ```
 
@@ -151,7 +179,10 @@ When it fails, `model-peer init` repairs it.
 
 ## Rolling it out to a team
 
-1. One person runs `model-peer init` and commits the result.
+1. One person runs `model-peer init` and commits the result. If your team uses
+   Codex or Gemini too, that is the moment to decide whether to add
+   `--agents claude,codex,gemini` and take the managed block in `AGENTS.md` and
+   `GEMINI.md`.
 2. Everyone else runs the [installer](install) once, for the `model-peer` command
    itself. The rules are already in the repo.
 3. Nobody needs the same CLIs. `model-peer doctor` reports what each machine has,
@@ -162,19 +193,9 @@ the developer's own vendor account, and a full `review` across three models take
 minutes. The shipped rules tell agents not to consult for anything answerable by
 reading the code, which is the difference between a useful habit and a bill.
 
-## If you would rather not run `init`
-
-Print the rules and paste them wherever you like:
-
-```bash
-model-peer rules print                     # the shared block
-model-peer rules print --profile gemini    # tailored for Gemini
-model-peer rules print --command           # the /peer-review slash command
-```
-
-The same text ships as
+The model-agnostic text also ships as
 [`examples/AGENTS.md`](https://github.com/makedirectory/ModelPeer/blob/main/examples/AGENTS.md),
-which is generated from `rules print` so the two can never disagree.
+generated from `rules print` so the two can never disagree.
 
 ## Next
 

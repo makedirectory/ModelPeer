@@ -2,6 +2,45 @@
 
 All notable changes to Model Peer are documented here.
 
+## 0.4.0 - 2026-08-10
+
+`model-peer init` was intrusive. It wrote the developer's `AGENTS.md`, and
+symlinked `CLAUDE.md` and `GEMINI.md` to it — rearranging root context files that
+belong to the project, not to Model Peer. A tool that does that uninvited does not
+get run twice.
+
+### Changed
+
+- **`init` now writes only files Model Peer owns.** By default that is
+  `.claude/rules/cross-model-consultation.md` and `.claude/commands/peer-review.md`,
+  and nothing else. `AGENTS.md` and `GEMINI.md` are never written unless their CLI
+  is named in `--agents`; `CLAUDE.md` is never written at all; no symlinks are ever
+  created.
+- `--agents` now defaults to `claude` rather than all three. Claude Code is the
+  only one of the three with a per-repository rules directory, so it is the only
+  one that can be wired up without editing a file the developer owns. Opt in with
+  `model-peer init --agents claude,codex,gemini`.
+- A default run states what it deliberately left alone, and how to include it, so
+  nobody assumes Codex and Gemini were wired up when they were not.
+- `--split` was removed. Every profile is per-CLI now, so the flag had nothing left
+  to select; it exits `2` with the replacement command rather than being silently
+  ignored.
+- `tools/bump-version.sh` sweeps every tracked file for the old version rather
+  than only the files it rewrites, and regenerates `examples/AGENTS.md` alongside
+  the embedded installer copy.
+
+### Fixed
+
+- **A symlinked `AGENTS.md` or `GEMINI.md` was written through.** In the old
+  `--split` layout, writing the Gemini block to a `GEMINI.md` that symlinked to
+  `AGENTS.md` silently rewrote `AGENTS.md` under a profile meant for a different
+  model. Symlinked context files are now refused unless `--force`.
+- The default run never created `.claude/rules/`, so the one file Model Peer can
+  install non-intrusively was the one thing `init` did not write. On a repo whose
+  `.gitignore` covers `.claude/*`, reverting the intrusive edits left the slash
+  command as the only surviving artifact — which read as "init only installs the
+  Claude command".
+
 ## 0.3.0 - 2026-08-10
 
 Repository setup and orchestration robustness. `model-peer init` closes the gap

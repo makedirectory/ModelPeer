@@ -12,9 +12,10 @@ sidebar_position: 3
 model-peer init
 ```
 
-Writes the consultation rules into the repository so your coding agent reaches for
-a peer on its own, and installs the `/peer-review` slash command for Claude Code.
-Re-running is safe: only the managed block is rewritten.
+Writes `.claude/rules/cross-model-consultation.md` and the `/peer-review` slash
+command, so your coding agent reaches for a peer on its own. It writes only files
+Model Peer owns — your `AGENTS.md`, `CLAUDE.md`, and `GEMINI.md` are untouched.
+Add `--agents claude,codex,gemini` to opt Codex and Gemini in.
 
 → [In your workflow](workflow) · [Agent rules](agent-rules)
 
@@ -154,7 +155,7 @@ model-peer doctor
 ```
 
 ```text
-Model Peer v0.3.0
+Model Peer v0.4.0
 
 Claude    installed  /Users/you/.local/bin/claude
 Codex     installed  /opt/homebrew/bin/codex
@@ -178,7 +179,7 @@ Consultation timeout:   600s per peer
 Peer-chain depth limit: 1 (max 10)
 
 Project rules in /Users/you/code/your-project
-  AGENTS.md
+  .claude/rules/cross-model-consultation.md
 ```
 
 If the last section reads `Project rules: none`, the agent in that repository has
