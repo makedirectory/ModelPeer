@@ -208,7 +208,7 @@ most likely to have moved.
 |---|---|---|
 | `MODEL_PEER_REVIEWERS` | all installed | Default review panel, e.g. `claude,codex,gemini` |
 | `MODEL_PEER_SYNTHESIZER` | first available | Default synthesis model |
-| `MODEL_PEER_MAX_DEPTH` | `1` | Default peer-chain depth limit, 1–10 |
+| `MODEL_PEER_MAX_DEPTH` | `1` | Default peer-chain depth limit, 1–10. Inside a chain it is the inherited cap: a peer may lower it, never raise it |
 | `MODEL_PEER_TIMEOUT` | `600` | Default per-consultation timeout in seconds; `0` disables |
 | `MODEL_PEER_MAX_DIFF_BYTES` | `500000` | Patch bytes embedded in review prompts |
 | `MODEL_PEER_BIN_DIR` | `~/.local/bin` | Install directory override |

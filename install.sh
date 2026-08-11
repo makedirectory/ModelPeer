@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="0.5.1"
+VERSION="0.6.0"
 BIN_DIR="${MODEL_PEER_BIN_DIR:-$HOME/.local/bin}"
 DO_SETUP=0
 INSTALL_DEPS=0
@@ -9,7 +9,7 @@ DO_LOGIN=0
 
 usage() {
   cat <<'USAGE'
-Model Peer installer v0.5.1
+Model Peer installer v0.6.0
 
 Usage:
   ./install.sh [options]
@@ -83,12 +83,12 @@ write_commands() {
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="0.5.1"
+VERSION="0.6.0"
 PROGRAM="model-peer"
 
 usage() {
   cat <<'USAGE'
-Model Peer v0.5.1 — cross-model peer review for coding agents.
+Model Peer v0.6.0 — cross-model peer review for coding agents.
 
 Usage:
   model-peer ask claude "<focused question>"
@@ -140,7 +140,9 @@ Peer-chain depth:
 Environment:
   MODEL_PEER_REVIEWERS        Default comma-separated review model list
   MODEL_PEER_SYNTHESIZER      Default synthesis model
-  MODEL_PEER_MAX_DEPTH        Default peer-chain depth limit, 1-10 (1)
+  MODEL_PEER_MAX_DEPTH        Default peer-chain depth limit, 1-10 (1). Inside a
+                              chain this is the inherited cap: a peer may lower it
+                              but never raise it.
   MODEL_PEER_TIMEOUT          Default per-consultation timeout in seconds (600)
   MODEL_PEER_MAX_DIFF_BYTES   Max patch bytes embedded in review prompt (500000)
   MODEL_PEER_STACK            Managed by Model Peer; the active peer chain
@@ -248,7 +250,25 @@ provider_version() {
 }
 
 DEFAULT_MAX_DEPTH=1
+# Sanity bound on --depth, not a safety property: what makes depth safe is the
+# no-repeat rule and the delegation matrix, and neither depends on this number.
+# It is deliberately not configurable, because it never binds — see usable_depth.
 DEPTH_CEILING=10
+
+# The longest chain the guards can actually produce: a model may not repeat, so
+# the chain cannot outlast the supply of distinct models. This, not DEPTH_CEILING,
+# is what stops a chain in practice, and doctor reports it for that reason.
+usable_depth() {
+  local ceiling="$DEPTH_CEILING" installed=0 p
+  for p in claude codex gemini; do
+    if provider_installed "$p"; then installed=$(( installed + 1 )); fi
+  done
+  if (( installed < ceiling )); then
+    printf '%s' "$installed"
+  else
+    printf '%s' "$ceiling"
+  fi
+}
 
 # MODEL_PEER_STACK is the chain of models already active, e.g. "claude:codex".
 # Its length is the current depth; the depth limit caps how long it may grow.
@@ -2233,12 +2253,17 @@ cmd_doctor() {
     printf '\nConsultation timeout:   invalid MODEL_PEER_TIMEOUT=%s\n' "${MODEL_PEER_TIMEOUT:-}"
   fi
 
-  local effective_depth
+  local effective_depth usable
+  usable="$(usable_depth)"
   if effective_depth="$(resolve_max_depth '' 2>/dev/null)"; then
-    printf '\nPeer-chain depth limit: %s (max %s)\n' "$effective_depth" "$DEPTH_CEILING"
+    printf '\nPeer-chain depth limit: %s (ceiling %s)\n' "$effective_depth" "$DEPTH_CEILING"
   else
     printf '\nPeer-chain depth limit: invalid MODEL_PEER_MAX_DEPTH=%s\n' "${MODEL_PEER_MAX_DEPTH:-}"
   fi
+  # The ceiling is rarely what actually binds. Report the real limit so raising
+  # the ceiling and seeing no change is not a mystery.
+  printf 'Longest usable chain:   %s (a model may not appear twice, and %s installed)\n' \
+    "$usable" "$(installed_reviewers | tr ',' ' ' | wc -w | tr -d ' ')"
   if [[ -n "${MODEL_PEER_STACK:-}" ]]; then
     printf 'Active peer chain:      %s (depth %s)\n' "$MODEL_PEER_STACK" "$(stack_depth)"
   fi
@@ -2438,11 +2463,30 @@ setup_login
 printf '
 Model Peer v%s installed in %s
 ' "$VERSION" "$BIN_DIR"
-printf 'Try:
+printf 'Check your setup:
 '
 printf '  model-peer doctor
+'
+printf '
+Use it yourself:
 '
 printf '  model-peer ask codex "Review this architecture"
 '
 printf '  model-peer review
+'
+# Installing globally gives the developer a command; it does not give the agent in
+# their repository a habit. That takes one more command, per project, and nobody
+# runs a command they were never told about.
+printf '
+Give your coding agent the habit — run this once per project:
+'
+printf '  cd /path/to/your-project
+'
+printf '  model-peer init
+'
+printf '
+  Installs a cross-model review skill for Claude Code, Codex, and Gemini, plus
+  the /peer-review and /peer-ask commands for Claude Code, so your agent reaches
+  for a peer on its own. Your AGENTS.md, CLAUDE.md, and GEMINI.md are not touched.
+  Preview it first with: model-peer init --dry-run
 '

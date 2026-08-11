@@ -125,7 +125,7 @@ EOF
 chmod +x "$TMP/bin/claude" "$TMP/bin/codex" "$TMP/bin/gemini"
 
 # Basic CLI/version.
-[[ "$(model-peer --version)" == 'model-peer 0.5.1' ]]
+[[ "$(model-peer --version)" == 'model-peer 0.6.0' ]]
 
 # Ask dispatch + safety args + stdin closure.
 printf 'sentinel\n' | model-peer ask codex 'review this' >/dev/null
@@ -203,7 +203,7 @@ else
 fi
 MODEL_PEER_STACK='claude:codex' model-peer ask gemini --depth 3 'third hop' >/dev/null
 
-# Depth values outside 1-10 and non-numeric values are rejected.
+# Depth values outside the ceiling and non-numeric values are rejected.
 for bad in 0 11 abc -1; do
   if model-peer ask codex --depth "$bad" 'x' >/dev/null 2>&1; then
     echo "expected --depth $bad to be rejected" >&2; exit 1
@@ -211,6 +211,27 @@ for bad in 0 11 abc -1; do
     [[ $? -eq 2 ]]
   fi
 done
+
+# Depth is a limit, never a permission: the guards must hold identically at the
+# top of the range as at the bottom. This is the invariant the whole depth design
+# rests on, so it is asserted at the maximum rather than assumed.
+if MODEL_PEER_STACK='codex' model-peer ask codex --depth 10 'self' >/dev/null 2>&1; then
+  echo 'expected the no-repeat guard to hold at maximum depth' >&2; exit 1
+else
+  [[ $? -eq 64 ]]
+fi
+: > "$LOG"
+model-peer ask gemini --depth 10 'leaf' >/dev/null 2>&1
+grep -Fq 'Remaining peer-chain depth: 0' "$LOG"
+grep -Fq 'Do not invoke Claude Code' "$LOG"
+awk '/GEMINI POLICY BEGIN/,/GEMINI POLICY END/' "$LOG" | grep -Fq 'run_shell_command'
+# Claude's grant stays scoped to the delegate entry point at any depth.
+: > "$LOG"
+model-peer ask claude --depth 10 'wide' >/dev/null 2>&1
+grep -Fq '<--allowedTools> <Bash(model-peer _delegate:*)>' "$LOG"
+if grep -Fq '<Bash(model-peer:*)>' "$LOG"; then
+  echo 'expected no unrestricted grant at maximum depth' >&2; exit 1
+fi
 
 # Depth 1 keeps Claude tool-restricted; delegation scopes execution to the
 # model-peer command namespace rather than granting a general shell.
@@ -1122,6 +1143,12 @@ EOF
 chmod +x "$TMP/bin/claude"
 model-peer doctor > "$TMP/doctor.txt" 2>&1
 grep -Fq '9.9.9' "$TMP/doctor.txt"
+
+# The depth ceiling is rarely what stops a chain: a model may not appear twice, so
+# the real cap is how many distinct models are installed. doctor reports both, so
+# nobody has to work that out from the guard source.
+grep -Fq 'ceiling 10' "$TMP/doctor.txt"
+grep -Fq 'Longest usable chain:   3' "$TMP/doctor.txt"
 
 # A peer that reads but does not write is verified clean.
 model-peer doctor --probe --models claude --timeout 20 > "$TMP/probe-ok.txt" 2>&1

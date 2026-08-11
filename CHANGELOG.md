@@ -2,7 +2,24 @@
 
 All notable changes to Model Peer are documented here.
 
-## Unreleased
+## 0.6.0 - 2026-08-11
+
+### Added
+
+- **`doctor` reports the longest chain that is actually reachable**, alongside the
+  configured limit. `--depth` accepts up to 10, but a model may never appear twice
+  in one chain, so the real cap is how many distinct models you have installed —
+  three. Depth above that has never done anything, and nothing said so:
+
+  ```text
+  Peer-chain depth limit: 1 (ceiling 10)
+  Longest usable chain:   3 (a model may not appear twice, and 3 installed)
+  ```
+
+- The installer now says how to finish setup. Installing Model Peer globally gives
+  *you* a command; it does not give the coding agent in your repository a habit.
+  That takes `model-peer init`, once per project, and nobody runs a command they
+  were never told about.
 
 ### Changed
 
