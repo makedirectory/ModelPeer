@@ -10,47 +10,113 @@ export PATH="$TMP/bin:$ROOT/bin:$PATH"
 export MODEL_PEER_BIN_DIR="$TMP/install-bin"
 LOG="$TMP/calls.log"
 export MODEL_PEER_TEST_LOG="$LOG"
+export MP_TEST_LIB="$TMP/bin/stub-lib.sh"
+
+# Shared stub behaviour. Reviewers run concurrently, so several stubs append to
+# the call log at once — and a review prompt is larger than a single write(), so
+# two records interleaved mid-prompt would break every assertion that greps for a
+# contiguous string. mkdir is atomic and serves as the lock; the spin is bounded
+# so a stub killed by one of the timeout tests can never wedge the others.
+cat > "$MP_TEST_LIB" <<'LIB'
+mp_stub_append_file() {
+  local dest="$1" src="$2" i=0
+  while (( i < 200 )); do
+    if mkdir "$dest.lock" 2>/dev/null; then
+      cat "$src" >> "$dest"
+      rmdir "$dest.lock" 2>/dev/null || true
+      return 0
+    fi
+    sleep 0.05
+    i=$(( i + 1 ))
+  done
+  cat "$src" >> "$dest"
+}
+
+# One record per invocation: argv, the generated Gemini policy when one was passed
+# (model-peer deletes it as soon as the stub exits), and whether stdin was closed.
+mp_stub_log() {
+  local name="$1" tmp prev='' a x=''
+  shift
+  tmp="$(mktemp "${TMPDIR:-/tmp}/mp-stub.XXXXXX")"
+  {
+    printf '%s ARGS:' "$(printf '%s' "$name" | tr '[:lower:]' '[:upper:]')"
+    printf ' <%s>' "$@"
+    for a in "$@"; do
+      if [[ "$prev" == '--policy' && -f "$a" ]]; then
+        printf '\nGEMINI POLICY BEGIN\n'
+        cat "$a"
+        printf '\nGEMINI POLICY END\n'
+      fi
+      prev="$a"
+    done
+    if [[ -t 0 ]]; then
+      printf ' STDIN=TTY\n'
+    elif IFS= read -r -t 1 x; then
+      printf ' STDIN=%s\n' "$x"
+    else
+      printf ' STDIN=EOF\n'
+    fi
+  } > "$tmp"
+  mp_stub_append_file "$MODEL_PEER_TEST_LOG" "$tmp"
+  rm -f "$tmp"
+}
+
+# The concurrency barrier: each reviewer records that it started, then blocks
+# until every requested reviewer has done the same. Serial orchestration can never
+# open it, which makes this a structural proof of fan-out rather than a
+# wall-clock guess. Inert unless MP_TEST_BARRIER_DIR is set.
+mp_stub_barrier() {
+  local name="$1" dir="${MP_TEST_BARRIER_DIR:-}" waited=0 seen wanted m
+  [[ -n "$dir" ]] || return 0
+  : > "$dir/started-$name"
+  wanted=0
+  for m in ${MP_TEST_BARRIER_MODELS:-}; do wanted=$(( wanted + 1 )); done
+  while (( waited < 200 )); do
+    seen=0
+    for m in ${MP_TEST_BARRIER_MODELS:-}; do
+      if [[ -e "$dir/started-$m" ]]; then seen=$(( seen + 1 )); fi
+    done
+    if (( seen >= wanted )); then return 0; fi
+    sleep 0.1
+    waited=$(( waited + 1 ))
+  done
+  printf 'barrier never opened for %s\n' "$name" >&2
+  return 1
+}
+LIB
 
 cat > "$TMP/bin/claude" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+. "$MP_TEST_LIB"
 if [[ "${1:-}" == auth && "${2:-}" == status ]]; then exit 0; fi
-printf 'CLAUDE ARGS:' >> "$MODEL_PEER_TEST_LOG"
-printf ' <%s>' "$@" >> "$MODEL_PEER_TEST_LOG"
-if [[ -t 0 ]]; then printf ' STDIN=TTY\n' >> "$MODEL_PEER_TEST_LOG"; else if IFS= read -r -t 1 x; then printf ' STDIN=%s\n' "$x" >> "$MODEL_PEER_TEST_LOG"; else printf ' STDIN=EOF\n' >> "$MODEL_PEER_TEST_LOG"; fi; fi
+mp_stub_log claude "$@"
+mp_stub_barrier claude
 printf 'claude review output\n'
 EOF
 
 cat > "$TMP/bin/codex" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+. "$MP_TEST_LIB"
 if [[ "${1:-}" == login && "${2:-}" == status ]]; then exit 0; fi
-printf 'CODEX ARGS:' >> "$MODEL_PEER_TEST_LOG"
-printf ' <%s>' "$@" >> "$MODEL_PEER_TEST_LOG"
-if [[ -t 0 ]]; then printf ' STDIN=TTY\n' >> "$MODEL_PEER_TEST_LOG"; else if IFS= read -r -t 1 x; then printf ' STDIN=%s\n' "$x" >> "$MODEL_PEER_TEST_LOG"; else printf ' STDIN=EOF\n' >> "$MODEL_PEER_TEST_LOG"; fi; fi
+mp_stub_log codex "$@"
+mp_stub_barrier codex
 printf 'codex review output\n'
 EOF
 
 cat > "$TMP/bin/gemini" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+. "$MP_TEST_LIB"
 # model-peer feature-detects --skip-trust from --help before invoking Gemini.
 # Answer that without logging, so the probe does not pollute call assertions.
 if [[ "$*" == *--help* ]]; then
   printf '      --skip-trust                Trust the current workspace for this session.\n'
   exit 0
 fi
-printf 'GEMINI ARGS:' >> "$MODEL_PEER_TEST_LOG"
-printf ' <%s>' "$@" >> "$MODEL_PEER_TEST_LOG"
-# Capture the generated policy; model-peer deletes it as soon as we exit.
-prev=''
-for a in "$@"; do
-  if [[ "$prev" == '--policy' && -f "$a" ]]; then
-    { printf '\nGEMINI POLICY BEGIN\n'; cat "$a"; printf '\nGEMINI POLICY END\n'; } >> "$MODEL_PEER_TEST_LOG"
-  fi
-  prev="$a"
-done
-if [[ -t 0 ]]; then printf ' STDIN=TTY\n' >> "$MODEL_PEER_TEST_LOG"; else if IFS= read -r -t 1 x; then printf ' STDIN=%s\n' "$x" >> "$MODEL_PEER_TEST_LOG"; else printf ' STDIN=EOF\n' >> "$MODEL_PEER_TEST_LOG"; fi; fi
+mp_stub_log gemini "$@"
+mp_stub_barrier gemini
 printf 'gemini review output\n'
 EOF
 chmod +x "$TMP/bin/claude" "$TMP/bin/codex" "$TMP/bin/gemini"
@@ -410,6 +476,206 @@ if grep -Fq 'skipme.log' "$LOG"; then
   echo 'expected gitignored files to stay out of the review context' >&2; exit 1
 fi
 rm -rf "$TMP/repo/src" "$TMP/repo/skipme.log" "$TMP/repo/.gitignore"
+
+# ---------------------------------------------------------------------------
+# Parallel reviewers. Independent reviewers are scheduled independently: every
+# requested reviewer starts before the parent waits for any of them.
+# ---------------------------------------------------------------------------
+
+# The concurrency barrier is the primary proof, and far less flaky than asserting
+# elapsed time on a shared CI runner. Each stub records that it started and blocks
+# until all three have; under serial orchestration the first reviewer can never
+# observe the others, so it fails and the panel collapses.
+BARRIER="$TMP/barrier"
+mkdir -p "$BARRIER"
+MP_TEST_BARRIER_DIR="$BARRIER" MP_TEST_BARRIER_MODELS='claude codex gemini' \
+  model-peer review --models claude,codex,gemini --synthesizer claude --timeout 60 \
+  'concurrency barrier' >/dev/null 2>"$TMP/barrier.err"
+for m in claude codex gemini; do
+  [[ -e "$BARRIER/started-$m" ]] || { echo "expected $m to have started" >&2; exit 1; }
+done
+grep -Fq 'Starting Claude independent review...' "$TMP/barrier.err"
+grep -Fq 'Starting Gemini independent review...' "$TMP/barrier.err"
+for label in Claude Codex Gemini; do
+  grep -Fq "$label completed." "$TMP/barrier.err"
+done
+rm -rf "$BARRIER"
+
+# Reviewer output must never interleave on stdout, and the replay must follow the
+# requested model list rather than completion order. These stubs finish in exactly
+# the reverse of the requested order and emit their reviews line by line.
+mk_chatty_stub() {
+  local m="$1" delay="$2" tag
+  tag="$(printf '%s' "$m" | tr '[:lower:]' '[:upper:]')"
+  cat > "$TMP/bin/$m" <<STUB
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "\$*" == *--help* ]]; then printf '      --skip-trust  Trust the workspace\n'; exit 0; fi
+if [[ "\$*" == *'synthesis editor'* ]]; then printf 'SYNTHESIS\n'; exit 0; fi
+sleep $delay
+printf '$tag-A\n'
+sleep 0.3
+printf '$tag-B\n'
+sleep 0.3
+printf '$tag-C\n'
+STUB
+  chmod +x "$TMP/bin/$m"
+}
+mk_chatty_stub claude 2
+mk_chatty_stub codex 1
+mk_chatty_stub gemini 0
+model-peer review --models claude,codex,gemini --synthesizer claude \
+  'replay order' > "$TMP/replay.out" 2>/dev/null
+for tag in CLAUDE CODEX GEMINI; do
+  printf '%s-A\n%s-B\n%s-C\n' "$tag" "$tag" "$tag" > "$TMP/expect-block.txt"
+  grep -A2 "^$tag-A\$" "$TMP/replay.out" | cmp -s - "$TMP/expect-block.txt" \
+    || { echo "expected $tag output to replay as one contiguous block" >&2; exit 1; }
+done
+# Gemini finished first and Claude last, but replay follows the requested order.
+replay_line() { grep -n "^$1\$" "$TMP/replay.out" | head -1 | cut -d: -f1; }
+[[ "$(replay_line CLAUDE-A)" -lt "$(replay_line CODEX-A)" ]] \
+  || { echo 'expected replay in requested order, not completion order' >&2; exit 1; }
+[[ "$(replay_line CODEX-A)" -lt "$(replay_line GEMINI-A)" ]] \
+  || { echo 'expected replay in requested order, not completion order' >&2; exit 1; }
+
+# Secondary evidence only: three reviewers that each take 4s must not cost 12s.
+# The threshold is deliberately generous so a loaded runner does not fail it.
+for m in claude codex gemini; do
+  cat > "$TMP/bin/$m" <<STUB
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "\$*" == *--help* ]]; then printf '      --skip-trust  Trust the workspace\n'; exit 0; fi
+if [[ "\$*" == *'synthesis editor'* ]]; then printf 'synthesis\n'; exit 0; fi
+sleep 5
+printf '$m review\n'
+STUB
+  chmod +x "$TMP/bin/$m"
+done
+OVERLAP_START="$(date +%s)"
+model-peer review --models claude,codex,gemini --synthesizer claude 'overlap' >/dev/null 2>&1
+OVERLAP_ELAPSED=$(( $(date +%s) - OVERLAP_START ))
+(( OVERLAP_ELAPSED < 12 )) \
+  || { echo "reviewers did not overlap (${OVERLAP_ELAPSED}s for three 5s reviewers)" >&2; exit 1; }
+
+# Synthesis must not start until every requested reviewer has reached a terminal
+# state, even though one of them finishes long before the other.
+MARKERS="$TMP/markers.txt"
+: > "$MARKERS"
+for m in codex gemini; do
+  case "$m" in codex) delay=3 ;; *) delay=1 ;; esac
+  cat > "$TMP/bin/$m" <<STUB
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "\$*" == *--help* ]]; then printf '      --skip-trust  Trust the workspace\n'; exit 0; fi
+printf '$m-start\n' >> "\$MP_TEST_MARKERS"
+sleep $delay
+printf '$m-end\n' >> "\$MP_TEST_MARKERS"
+printf '$m review\n'
+STUB
+  chmod +x "$TMP/bin/$m"
+done
+cat > "$TMP/bin/claude" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'synthesis-start\n' >> "$MP_TEST_MARKERS"
+printf 'final report\n'
+STUB
+chmod +x "$TMP/bin/claude"
+MP_TEST_MARKERS="$MARKERS" model-peer review --models codex,gemini --synthesizer claude \
+  'synthesis ordering' >/dev/null 2>&1
+marker_line() { grep -n "^$1\$" "$MARKERS" | head -1 | cut -d: -f1; }
+for m in codex gemini; do
+  [[ "$(marker_line "$m-end")" -lt "$(marker_line synthesis-start)" ]] \
+    || { echo "expected synthesis to start only after $m finished" >&2; exit 1; }
+done
+
+# A reviewer that emits a partial answer and then hangs has reviewed nothing. Its
+# half-written finding must reach neither stdout nor the synthesizer: a truncated
+# finding read as a complete one is worse than no finding at all.
+cp "$TMP/bin/claude.real" "$TMP/bin/claude"
+cp "$TMP/bin/gemini.real" "$TMP/bin/gemini"
+cat > "$TMP/bin/codex" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == login && "${2:-}" == status ]]; then exit 0; fi
+printf 'CODEX-PARTIAL-FINDING\n'
+sleep 111
+STUB
+chmod +x "$TMP/bin/codex"
+: > "$LOG"
+model-peer review --models claude,codex,gemini --synthesizer claude --timeout 3 \
+  'partial output' > "$TMP/partial-out.txt" 2>/dev/null
+if grep -Fq 'CODEX-PARTIAL-FINDING' "$TMP/partial-out.txt"; then
+  echo 'expected a dropped reviewer partial answer to stay off stdout' >&2; exit 1
+fi
+if grep -Fq 'CODEX-PARTIAL-FINDING' "$LOG"; then
+  echo 'expected a dropped reviewer partial answer to stay out of synthesis' >&2; exit 1
+fi
+grep -Fq 'timed out after 3s and was dropped from the panel' "$LOG"
+
+# --strict refuses to synthesize, but the reviews that did complete are still
+# replayed: hiding finished work because a sibling failed helps nobody.
+if model-peer review --models claude,codex,gemini --synthesizer claude --timeout 3 \
+    --strict 'strict replay' > "$TMP/strict-out.txt" 2>/dev/null; then
+  echo 'expected --strict to refuse an incomplete panel' >&2; exit 1
+else
+  [[ $? -eq 1 ]]
+fi
+grep -Fq 'claude review output' "$TMP/strict-out.txt"
+grep -Fq 'gemini review output' "$TMP/strict-out.txt"
+cp "$TMP/bin/codex.real" "$TMP/bin/codex"
+
+# Ctrl-C during a parallel review must take down every worker and every vendor
+# process tree beneath them. Parallelizing widens that tree, which is why this
+# matters more here than it did serially.
+cat > "$TMP/bin/blocker" <<'STUB'
+#!/usr/bin/env bash
+exec sleep 137
+STUB
+chmod +x "$TMP/bin/blocker"
+for m in claude codex gemini; do
+  cat > "$TMP/bin/$m" <<'STUB'
+#!/usr/bin/env bash
+if [[ "$*" == *--help* ]]; then printf '      --skip-trust  Trust the workspace\n'; exit 0; fi
+blocker
+STUB
+  chmod +x "$TMP/bin/$m"
+done
+# Compare against a snapshot rather than an empty temp directory: an unrelated
+# stale directory from some earlier run must not be read as this run's leak.
+REVIEW_TMP_BEFORE="$(ls -d "${TMPDIR:-/tmp}"/model-peer-review.* 2>/dev/null || true)"
+# Job control has to be on here. Bash sets SIGINT to *ignored* in a background job
+# when job control is off, and a signal ignored on entry cannot be trapped — so
+# without this the interrupt is swallowed and the test silently proves nothing.
+# With it, this is the same signal disposition a user gets pressing Ctrl-C.
+set -m
+model-peer review --models claude,codex,gemini --synthesizer claude --timeout 120 \
+  'interrupt' >/dev/null 2>&1 &
+INT_PID=$!
+set +m
+sleep 5
+INT_START="$(date +%s)"
+kill -INT "$INT_PID"
+if wait "$INT_PID"; then INT_RC=0; else INT_RC=$?; fi
+INT_ELAPSED=$(( $(date +%s) - INT_START ))
+# Re-raising the signal is what makes this the conventional 130 rather than
+# whatever the interrupted statement happened to return.
+(( INT_RC == 130 )) \
+  || { echo "expected an interrupted review to exit 130 (got $INT_RC)" >&2; exit 1; }
+# And it must stop the panel, not merely clean up and let it run to its timeout.
+(( INT_ELAPSED < 30 )) \
+  || { echo "interrupt did not stop the panel promptly (${INT_ELAPSED}s)" >&2; exit 1; }
+sleep 2
+if pgrep -f 'sleep 137' >/dev/null 2>&1; then
+  echo 'interrupt left an orphaned vendor process behind' >&2; exit 1
+fi
+REVIEW_TMP_AFTER="$(ls -d "${TMPDIR:-/tmp}"/model-peer-review.* 2>/dev/null || true)"
+if [[ "$REVIEW_TMP_BEFORE" != "$REVIEW_TMP_AFTER" ]]; then
+  echo 'interrupt left the review temp directory behind' >&2; exit 1
+fi
+for m in claude codex gemini; do
+  cp "$TMP/bin/$m.real" "$TMP/bin/$m"
+done
 
 cd "$ROOT"
 
