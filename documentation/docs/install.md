@@ -12,13 +12,13 @@ CLIs you choose to use.
 ## One-line install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/makedirectory/ModelPeer/v0.5.0/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/makedirectory/ModelPeer/v0.5.1/install.sh | bash
 ```
 
 Interactive setup, which can offer to install missing CLIs:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/makedirectory/ModelPeer/v0.5.0/install.sh | bash -s -- --setup
+curl -fsSL https://raw.githubusercontent.com/makedirectory/ModelPeer/v0.5.1/install.sh | bash -s -- --setup
 ```
 
 As with any remote shell installer, inspect it before piping it into a shell.

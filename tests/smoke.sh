@@ -56,7 +56,7 @@ EOF
 chmod +x "$TMP/bin/claude" "$TMP/bin/codex" "$TMP/bin/gemini"
 
 # Basic CLI/version.
-[[ "$(model-peer --version)" == 'model-peer 0.5.0' ]]
+[[ "$(model-peer --version)" == 'model-peer 0.5.1' ]]
 
 # Ask dispatch + safety args + stdin closure.
 printf 'sentinel\n' | model-peer ask codex 'review this' >/dev/null
@@ -675,6 +675,43 @@ cp "$TMP/bin/claude.real" "$TMP/bin/claude"
 
 # The probe leaves nothing behind.
 [[ -z "$(ls -d "${TMPDIR:-/tmp}"/model-peer-probe.* 2>/dev/null)" ]]
+
+# Gemini records its chosen auth method in settings.json. The state that matters
+# is "configured for an API key with no key present": headless, Gemini blocks on a
+# prompt stdin cannot answer, so a review hangs instead of failing. doctor used to
+# call that "cached OAuth is verified on first request", which is exactly wrong.
+AUTH_HOME="$TMP/auth-home"
+mkdir -p "$AUTH_HOME/.gemini"
+
+printf '{"security":{"auth":{"selectedType":"gemini-api-key"}}}\n' \
+  > "$AUTH_HOME/.gemini/settings.json"
+HOME="$AUTH_HOME" model-peer doctor > "$TMP/auth1.txt" 2>&1
+grep -Fq 'BROKEN' "$TMP/auth1.txt"
+grep -Fq 'will hang' "$TMP/auth1.txt"
+
+HOME="$AUTH_HOME" GEMINI_API_KEY=present model-peer doctor > "$TMP/auth2.txt" 2>&1
+grep -Fq 'API key (configured, key present)' "$TMP/auth2.txt"
+if grep -Fq 'BROKEN' "$TMP/auth2.txt"; then
+  echo 'expected a present API key to satisfy the api-key auth type' >&2; exit 1
+fi
+
+# OAuth selected but nobody signed in is equally broken.
+printf '{"security":{"auth":{"selectedType":"oauth-personal"}}}\n' \
+  > "$AUTH_HOME/.gemini/settings.json"
+printf '{"active": null, "old": []}\n' > "$AUTH_HOME/.gemini/google_accounts.json"
+HOME="$AUTH_HOME" model-peer doctor > "$TMP/auth3.txt" 2>&1
+grep -Fq 'no account is signed in' "$TMP/auth3.txt"
+printf '{"active": "me@example.com", "old": []}\n' > "$AUTH_HOME/.gemini/google_accounts.json"
+HOME="$AUTH_HOME" model-peer doctor > "$TMP/auth4.txt" 2>&1
+grep -Fq 'OAuth (signed in)' "$TMP/auth4.txt"
+
+# No settings file at all is a fresh install, not a fault.
+rm -f "$AUTH_HOME/.gemini/settings.json" "$AUTH_HOME/.gemini/google_accounts.json"
+HOME="$AUTH_HOME" model-peer doctor > "$TMP/auth5.txt" 2>&1
+grep -Fq 'no method chosen yet' "$TMP/auth5.txt"
+if grep -Fq 'BROKEN' "$TMP/auth5.txt"; then
+  echo 'expected a fresh install not to be reported as broken' >&2; exit 1
+fi
 
 # doctor still rejects stray arguments.
 if model-peer doctor --bogus >/dev/null 2>&1; then

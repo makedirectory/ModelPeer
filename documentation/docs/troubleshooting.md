@@ -73,6 +73,39 @@ behavior of refusing whenever any reviewer fails:
 model-peer review --strict
 ```
 
+## Gemini hangs instead of answering
+
+**Signature:** Gemini produces nothing and never exits. `model-peer doctor --probe`
+reports `no answer within Ns — nothing verified`, while `gemini` used
+interactively works fine.
+
+Almost always an auth mismatch. Gemini records one chosen sign-in method in
+`~/.gemini/settings.json`; if that method's credential is missing, a **headless**
+run does not fail — it blocks on a prompt that stdin cannot answer. Interactively
+it works because Gemini can ask you.
+
+```bash
+model-peer doctor
+```
+
+```text
+Gemini authentication: BROKEN — configured for an API key, but neither GEMINI_API_KEY nor
+                       GOOGLE_API_KEY is set. Headless calls will hang rather than
+                       fail, because Gemini waits on a prompt that stdin cannot
+                       answer.
+```
+
+Fix it by supplying the credential the recorded method expects:
+
+```bash
+export GEMINI_API_KEY=...   # for selectedType: gemini-api-key
+gemini                      # or re-run interactively and pick another method
+```
+
+The tell that this is auth and not a Model Peer problem: with a *deliberately
+wrong* key the same call fails in about a second with HTTP 400, while with no key
+it hangs indefinitely.
+
 ## Gemini returns nothing at all
 
 **Signature:** Gemini exits `0` immediately, having written no output. Interactively

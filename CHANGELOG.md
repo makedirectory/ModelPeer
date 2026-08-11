@@ -2,6 +2,32 @@
 
 All notable changes to Model Peer are documented here.
 
+## 0.5.1 - 2026-08-11
+
+### Fixed
+
+- **`doctor` reported a broken Gemini setup as fine.** It printed "cached OAuth is
+  verified on first request" whenever no auth environment variable was set,
+  without reading the sign-in method Gemini actually recorded in
+  `~/.gemini/settings.json`. The state it hid is the worst one: configured for an
+  API key with no key present, Gemini does not fail — headless, with stdin closed,
+  it blocks on an auth prompt nobody can answer, and a review simply hangs.
+
+  `doctor` now reads the recorded method and checks the matching credential,
+  naming the problem instead of a multi-minute hang:
+
+  ```text
+  Gemini authentication: BROKEN — configured for an API key, but neither GEMINI_API_KEY
+                         nor GOOGLE_API_KEY is set. Headless calls will hang rather
+                         than fail...
+  ```
+
+  API-key, Vertex AI, OAuth, and not-yet-configured are each reported distinctly.
+
+  Found by `doctor --probe` from 0.5.0: the probe reported Gemini as unverified,
+  and the cause turned out to be local auth rather than anything in Model Peer —
+  which is the separation the probe was added to make.
+
 ## 0.5.0 - 2026-08-11
 
 ### Added
