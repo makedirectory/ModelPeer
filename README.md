@@ -178,6 +178,16 @@ Security issues should go through
 [private reporting](https://github.com/makedirectory/ModelPeer/security) rather
 than a public issue.
 
+## ☕ Coffee?
+
+If a peer caught something before it shipped, I'd genuinely love to hear about it.
+If a peer told you something confidently wrong — we've never met, and this is the
+first you're hearing of it. (Peers are advisory. It says so above.)
+
+Either way, if it saved you a review cycle, you can buy me a coffee:
+
+**[buy me a coffee →](https://venmo.com/u/Andrew-Schwartz-92)**
+
 ## License
 
 MIT, Copyright (c) 2026 Make Directory Developers, LLC. See [`LICENSE`](LICENSE).
