@@ -1975,9 +1975,50 @@ cmd_trust() {
 # not error: headless, with stdin closed, it blocks on an auth prompt nobody can
 # answer, and a review just hangs. Naming that state costs one file read.
 # shellcheck disable=SC2016  # backticks below are literal prose, not substitution
+# Gemini loads a .env of its own before it validates anything, searching from the
+# current directory upward and preferring <dir>/.gemini/.env over <dir>/.env, then
+# falling back to ~/.gemini/.env and ~/.env. A key set there is invisible to this
+# process, which is how Model Peer came to report a working setup as broken.
+#
+# Only the presence of the assignment is checked. The value is never read.
+gemini_env_defines() {
+  local name="$1" dir file
+  dir="$PWD"
+  while :; do
+    for file in "$dir/.gemini/.env" "$dir/.env"; do
+      if [[ -f "$file" ]] && grep -Eq "^[[:space:]]*(export[[:space:]]+)?$name=" "$file" 2>/dev/null; then
+        return 0
+      fi
+    done
+    if [[ "$dir" == '/' || -z "$dir" ]]; then
+      break
+    fi
+    dir="$(dirname "$dir")"
+  done
+  for file in "$HOME/.gemini/.env" "$HOME/.env"; do
+    if [[ -f "$file" ]] && grep -Eq "^[[:space:]]*(export[[:space:]]+)?$name=" "$file" 2>/dev/null; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Mirrors Gemini CLI 0.46's own validateAuthMethod, read out of the shipping bundle
+# rather than guessed at:
+#
+#   oauth-personal / compute-default-credentials   returns valid unconditionally
+#   gemini-api-key   GEMINI_API_KEY from the environment or a loaded .env, OR a key
+#                    in its credential store, which no shell can see
+#   vertex-ai        GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION, or GOOGLE_API_KEY
+#   anything else    rejected outright as an invalid method
+#
+# Earlier versions got every branch of this wrong, and the OAuth one was invented
+# whole: it reported "no account is signed in" from google_accounts.json, a file
+# validateAuthMethod never reads. Reporting a working setup as broken sends people
+# to fix what is not wrong and teaches them to ignore the diagnostic that matters,
+# so nothing here states a verdict it cannot support.
 gemini_auth_status() {
   local settings="$HOME/.gemini/settings.json"
-  local accounts="$HOME/.gemini/google_accounts.json"
   local selected=''
 
   if [[ -f "$settings" ]]; then
@@ -1985,40 +2026,42 @@ gemini_auth_status() {
   fi
 
   case "$selected" in
+    *oauth*|*personal*|*login*|*compute-default*)
+      printf 'OAuth — Gemini accepts this without checking a local credential'
+      ;;
     *api-key*)
-      if [[ -n "${GEMINI_API_KEY:-}${GOOGLE_API_KEY:-}" ]]; then
-        printf 'API key (configured, key present)'
+      if [[ -n "${GEMINI_API_KEY:-}" ]]; then
+        printf 'API key (GEMINI_API_KEY set)'
+      elif gemini_env_defines GEMINI_API_KEY; then
+        printf 'API key (GEMINI_API_KEY set in a .env that Gemini loads)'
       else
-        printf 'BROKEN — configured for an API key, but neither GEMINI_API_KEY nor\n'
-        printf '                       GOOGLE_API_KEY is set. Headless calls will hang rather than\n'
-        printf '                       fail, because Gemini waits on a prompt that stdin cannot\n'
-        printf '                       answer. Export a key, or re-run `gemini` and pick another\n'
-        printf '                       sign-in method.'
+        printf 'API key selected, and no GEMINI_API_KEY is visible in the environment\n'
+        printf '                       or in a .env Gemini would load. It may still hold one in its\n'
+        printf '                       credential store, which no shell can read — so this is not\n'
+        printf '                       necessarily a problem. If there is no key at all, a headless\n'
+        printf '                       call hangs rather than fails, because Gemini waits on a prompt\n'
+        printf '                       stdin cannot answer. Run: model-peer doctor --probe'
       fi
       ;;
     *vertex*)
-      if [[ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}${GOOGLE_CLOUD_PROJECT:-}" ]]; then
-        printf 'Vertex AI (configured, credentials present)'
+      if [[ -n "${GOOGLE_CLOUD_PROJECT:-}" && -n "${GOOGLE_CLOUD_LOCATION:-}" ]]; then
+        printf 'Vertex AI (project and location set)'
+      elif [[ -n "${GOOGLE_API_KEY:-}" ]]; then
+        printf 'Vertex AI (GOOGLE_API_KEY set, express mode)'
+      elif gemini_env_defines GOOGLE_CLOUD_PROJECT || gemini_env_defines GOOGLE_API_KEY; then
+        printf 'Vertex AI (configured in a .env that Gemini loads)'
       else
-        printf 'BROKEN — configured for Vertex AI, but no credentials are set'
-      fi
-      ;;
-    *oauth*|*personal*|*login*)
-      if [[ -f "$accounts" ]] && ! grep -Fq '"active": null' "$accounts"; then
-        printf 'OAuth (signed in)'
-      else
-        printf 'BROKEN — configured for OAuth, but no account is signed in (run: gemini)'
+        printf 'Vertex AI selected, and neither GOOGLE_CLOUD_PROJECT with\n'
+        printf '                       GOOGLE_CLOUD_LOCATION nor GOOGLE_API_KEY is visible here.\n'
+        printf '                       Gemini requires one of those for this method and will refuse\n'
+        printf '                       to start without it. Run: model-peer doctor --probe'
       fi
       ;;
     '')
-      if [[ -n "${GEMINI_API_KEY:-}${GOOGLE_API_KEY:-}${GOOGLE_APPLICATION_CREDENTIALS:-}" ]]; then
-        printf 'environment-based auth detected'
-      else
-        printf 'no method chosen yet; run `gemini` once to sign in'
-      fi
+      printf 'no method recorded yet; Gemini asks on first run'
       ;;
     *)
-      printf '%s (unrecognized; Model Peer cannot verify it)' "$selected"
+      printf "'%s' is not a method Gemini recognizes; it rejects this outright" "$selected"
       ;;
   esac
 }

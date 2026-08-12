@@ -112,7 +112,7 @@ model-peer review --strict
 reports `no answer within Ns — nothing verified`, while `gemini` used
 interactively works fine.
 
-Almost always an auth mismatch. Gemini records one chosen sign-in method in
+Usually an auth mismatch. Gemini records one chosen sign-in method in
 `~/.gemini/settings.json`; if that method's credential is missing, a **headless**
 run does not fail — it blocks on a prompt that stdin cannot answer. Interactively
 it works because Gemini can ask you.
@@ -122,17 +122,39 @@ model-peer doctor
 ```
 
 ```text
-Gemini authentication: BROKEN — configured for an API key, but neither GEMINI_API_KEY nor
-                       GOOGLE_API_KEY is set. Headless calls will hang rather than
-                       fail, because Gemini waits on a prompt that stdin cannot
-                       answer.
+Gemini authentication: API key selected, and no GEMINI_API_KEY is visible in the environment
+                       or in a .env Gemini would load. It may still hold one in its
+                       credential store, which no shell can read — so this is not
+                       necessarily a problem...
 ```
+
+`doctor` deliberately stops short of calling this broken, because it cannot see
+everything Gemini can. Mirroring the CLI's own `validateAuthMethod`, these are the
+credentials each recorded method actually accepts:
+
+| `selectedType` | What Gemini accepts |
+|---|---|
+| `oauth-personal`, `compute-default-credentials` | Anything — it performs no local credential check |
+| `gemini-api-key` | `GEMINI_API_KEY`, from the environment **or** a `.env` it loads, **or** a key in its own credential store |
+| `vertex-ai` | `GOOGLE_CLOUD_PROJECT` **and** `GOOGLE_CLOUD_LOCATION`, **or** `GOOGLE_API_KEY` for express mode |
+
+Gemini searches for that `.env` from the current directory upward, preferring
+`<dir>/.gemini/.env` over `<dir>/.env`, then falling back to `~/.gemini/.env` and
+`~/.env`. A key set in any of them is invisible to your shell but perfectly visible
+to Gemini — which is why a setup can work while `doctor` cannot confirm it.
 
 Fix it by supplying the credential the recorded method expects:
 
 ```bash
 export GEMINI_API_KEY=...   # for selectedType: gemini-api-key
 gemini                      # or re-run interactively and pick another method
+```
+
+To settle it rather than guess, run the probe — it is the only check that actually
+consults the model:
+
+```bash
+model-peer doctor --probe --models gemini
 ```
 
 The tell that this is auth and not a Model Peer problem: with a *deliberately

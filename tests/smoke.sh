@@ -1201,42 +1201,87 @@ cp "$TMP/bin/claude.real" "$TMP/bin/claude"
 # The probe leaves nothing behind.
 [[ -z "$(ls -d "${TMPDIR:-/tmp}"/model-peer-probe.* 2>/dev/null)" ]]
 
-# Gemini records its chosen auth method in settings.json. The state that matters
-# is "configured for an API key with no key present": headless, Gemini blocks on a
-# prompt stdin cannot answer, so a review hangs instead of failing. doctor used to
-# call that "cached OAuth is verified on first request", which is exactly wrong.
+# Gemini records its chosen auth method in settings.json, and the state worth
+# warning about is "configured for an API key with no key present": headless,
+# Gemini blocks on a prompt stdin cannot answer, so a review hangs instead of
+# failing. But settings.json plus two environment variables is not the whole
+# credential story — Gemini loads a .env of its own and can hold a sign-in Model
+# Peer cannot see — so this is reported as a suspicion, never as a verdict.
 AUTH_HOME="$TMP/auth-home"
 mkdir -p "$AUTH_HOME/.gemini"
 
+# api-key with no key anywhere Model Peer can see: worth saying, but not a verdict.
+# Gemini also accepts a key from its own credential store, which no shell can read.
 printf '{"security":{"auth":{"selectedType":"gemini-api-key"}}}\n' \
   > "$AUTH_HOME/.gemini/settings.json"
 HOME="$AUTH_HOME" model-peer doctor > "$TMP/auth1.txt" 2>&1
-grep -Fq 'BROKEN' "$TMP/auth1.txt"
-grep -Fq 'will hang' "$TMP/auth1.txt"
+grep -Fq 'no GEMINI_API_KEY is visible' "$TMP/auth1.txt"
+grep -Fq 'hangs rather than fails' "$TMP/auth1.txt"
+# The caveat must travel with the warning, or it reads as a verdict again.
+grep -Fq 'credential store' "$TMP/auth1.txt"
+grep -Fq 'necessarily a problem' "$TMP/auth1.txt"
+grep -Fq 'doctor --probe' "$TMP/auth1.txt"
 
 HOME="$AUTH_HOME" GEMINI_API_KEY=present model-peer doctor > "$TMP/auth2.txt" 2>&1
-grep -Fq 'API key (configured, key present)' "$TMP/auth2.txt"
-if grep -Fq 'BROKEN' "$TMP/auth2.txt"; then
-  echo 'expected a present API key to satisfy the api-key auth type' >&2; exit 1
-fi
+grep -Fq 'API key (GEMINI_API_KEY set)' "$TMP/auth2.txt"
 
-# OAuth selected but nobody signed in is equally broken.
+# Gemini loads a .env before validating, so a key set there counts. Missing this is
+# what made Model Peer report a working setup as broken.
+printf 'GEMINI_API_KEY=from-dotenv\n' > "$AUTH_HOME/.gemini/.env"
+HOME="$AUTH_HOME" model-peer doctor > "$TMP/auth2b.txt" 2>&1
+grep -Fq 'set in a .env that Gemini loads' "$TMP/auth2b.txt"
+rm -f "$AUTH_HOME/.gemini/.env"
+
+# OAuth: validateAuthMethod returns valid unconditionally and never reads
+# google_accounts.json, so neither does Model Peer. Both states report the same.
 printf '{"security":{"auth":{"selectedType":"oauth-personal"}}}\n' \
   > "$AUTH_HOME/.gemini/settings.json"
 printf '{"active": null, "old": []}\n' > "$AUTH_HOME/.gemini/google_accounts.json"
 HOME="$AUTH_HOME" model-peer doctor > "$TMP/auth3.txt" 2>&1
-grep -Fq 'no account is signed in' "$TMP/auth3.txt"
+grep -Fq 'OAuth — Gemini accepts this without checking a local credential' "$TMP/auth3.txt"
+if grep -Fq 'signed in' "$TMP/auth3.txt"; then
+  echo 'expected doctor not to invent a sign-in check Gemini does not perform' >&2; exit 1
+fi
 printf '{"active": "me@example.com", "old": []}\n' > "$AUTH_HOME/.gemini/google_accounts.json"
 HOME="$AUTH_HOME" model-peer doctor > "$TMP/auth4.txt" 2>&1
-grep -Fq 'OAuth (signed in)' "$TMP/auth4.txt"
+grep -Fq 'OAuth — Gemini accepts this without checking a local credential' "$TMP/auth4.txt"
+
+# Vertex AI wants GOOGLE_CLOUD_PROJECT with GOOGLE_CLOUD_LOCATION, or GOOGLE_API_KEY
+# for express mode. Model Peer used to check GOOGLE_APPLICATION_CREDENTIALS, which
+# Gemini does not consult for this method at all.
+printf '{"security":{"auth":{"selectedType":"vertex-ai"}}}\n' \
+  > "$AUTH_HOME/.gemini/settings.json"
+HOME="$AUTH_HOME" model-peer doctor > "$TMP/auth6.txt" 2>&1
+grep -Fq 'neither GOOGLE_CLOUD_PROJECT with' "$TMP/auth6.txt"
+HOME="$AUTH_HOME" GOOGLE_CLOUD_PROJECT=p GOOGLE_CLOUD_LOCATION=us-central1 \
+  model-peer doctor > "$TMP/auth7.txt" 2>&1
+grep -Fq 'Vertex AI (project and location set)' "$TMP/auth7.txt"
+HOME="$AUTH_HOME" GOOGLE_API_KEY=k model-peer doctor > "$TMP/auth8.txt" 2>&1
+grep -Fq 'express mode' "$TMP/auth8.txt"
+# The project alone is not enough; Gemini requires the location with it.
+HOME="$AUTH_HOME" GOOGLE_CLOUD_PROJECT=p model-peer doctor > "$TMP/auth9.txt" 2>&1
+grep -Fq 'neither GOOGLE_CLOUD_PROJECT with' "$TMP/auth9.txt"
+
+# A method Gemini does not recognize is rejected by Gemini outright, so this one
+# Model Peer can state plainly.
+printf '{"security":{"auth":{"selectedType":"telepathy"}}}\n' \
+  > "$AUTH_HOME/.gemini/settings.json"
+HOME="$AUTH_HOME" model-peer doctor > "$TMP/auth10.txt" 2>&1
+grep -Fq 'is not a method Gemini recognizes' "$TMP/auth10.txt"
 
 # No settings file at all is a fresh install, not a fault.
 rm -f "$AUTH_HOME/.gemini/settings.json" "$AUTH_HOME/.gemini/google_accounts.json"
 HOME="$AUTH_HOME" model-peer doctor > "$TMP/auth5.txt" 2>&1
-grep -Fq 'no method chosen yet' "$TMP/auth5.txt"
-if grep -Fq 'BROKEN' "$TMP/auth5.txt"; then
-  echo 'expected a fresh install not to be reported as broken' >&2; exit 1
-fi
+grep -Fq 'no method recorded yet' "$TMP/auth5.txt"
+
+# doctor must never call a setup broken from configuration inference. It did once,
+# on a setup that worked, and a diagnostic that cries wolf gets ignored when it
+# counts. Only --probe, which actually consults the model, may reach a verdict.
+for f in auth1 auth2 auth2b auth3 auth4 auth5 auth6 auth7 auth8 auth9 auth10; do
+  if grep -Eq 'BROKEN|is broken' "$TMP/$f.txt"; then
+    echo "expected doctor never to assert broken from config alone ($f)" >&2; exit 1
+  fi
+done
 
 # doctor still rejects stray arguments.
 if model-peer doctor --bogus >/dev/null 2>&1; then
