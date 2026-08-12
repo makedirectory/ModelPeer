@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="0.6.1"
+VERSION="0.6.2"
 BIN_DIR="${MODEL_PEER_BIN_DIR:-$HOME/.local/bin}"
 DO_SETUP=0
 INSTALL_DEPS=0
@@ -9,7 +9,7 @@ DO_LOGIN=0
 
 usage() {
   cat <<'USAGE'
-Model Peer installer v0.6.1
+Model Peer installer v0.6.2
 
 Usage:
   ./install.sh [options]
@@ -83,12 +83,12 @@ write_commands() {
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="0.6.1"
+VERSION="0.6.2"
 PROGRAM="model-peer"
 
 usage() {
   cat <<'USAGE'
-Model Peer v0.6.1 — cross-model peer review for coding agents.
+Model Peer v0.6.2 — cross-model peer review for coding agents.
 
 Usage:
   model-peer ask claude "<focused question>"

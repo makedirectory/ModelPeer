@@ -61,8 +61,15 @@ bash bin/model-peer update >/dev/null
 # Sweep the whole tree rather than only the files listed above, so a version
 # pinned in a page nobody remembered to add here still fails the bump. The
 # CHANGELOG is excluded on purpose: old releases keep their own numbers.
+#
+# The safety page is excluded for the same reason. It cites the release a specific
+# fix landed in, so a reader on an older version knows whether it applies to them.
+# That is a historical fact, not a pin, and rewriting it every bump would make it a
+# lie. Nothing in that page is version-pinned in the install sense — it carries no
+# curl URL — so excluding it costs no coverage.
 remaining="$(git ls-files -z \
   | grep -zv '^CHANGELOG\.md$' \
+  | grep -zv '^documentation/docs/safety\.md$' \
   | grep -zv '^tools/bump-version\.sh$' \
   | grep -zv '^documentation/package-lock\.json$' \
   | xargs -0 grep -lF "$old" 2>/dev/null || true)"

@@ -2,6 +2,31 @@
 
 All notable changes to Model Peer are documented here.
 
+## 0.6.2 - 2026-08-12
+
+### Fixed
+
+- **`--timeout` now applies below the top level.** `run_claude` and `run_codex`
+  handed a nested peer `MODEL_PEER_STACK` and `MODEL_PEER_MAX_DEPTH` but not
+  `MODEL_PEER_TIMEOUT`. A delegating peer's consultation therefore re-resolved the
+  timeout from an unset variable and fell back to the 600s default:
+
+  ```bash
+  model-peer ask claude --depth 2 --timeout 60   # nested peer got 600s, not 60
+  ```
+
+  Ten times the requested bound, in the direction that costs money. The resolved
+  value now travels with the rest of the chain state, so `--timeout` and
+  `MODEL_PEER_TIMEOUT` mean the same thing at every depth, and `--timeout 0` is
+  inherited as disabled rather than re-defaulted.
+
+  Only reachable at `--depth 2` or greater, which is opt-in and off by default.
+
+  This bounds **each hop**, not the whole chain: N consultations can still total
+  N × timeout. Turning `--timeout` into a single deadline spanning a chain needs a
+  component that owns the whole loop, which is the consultation broker's job rather
+  than a patch to the per-call path.
+
 ## 0.6.1 - 2026-08-12
 
 ### Fixed

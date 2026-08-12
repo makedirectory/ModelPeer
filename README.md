@@ -69,7 +69,7 @@ git changes --+--> Codex ---+--> synthesis
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/makedirectory/ModelPeer/v0.6.1/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/makedirectory/ModelPeer/v0.6.2/install.sh | bash
 ```
 
 Or clone and run `./install.sh`. As with any remote shell installer, inspect it
