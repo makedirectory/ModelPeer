@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="0.5.1"
+VERSION="0.6.0"
 PROGRAM="model-peer"
 
 usage() {
   cat <<'USAGE'
-Model Peer v0.5.1 — cross-model peer review for coding agents.
+Model Peer v0.6.0 — cross-model peer review for coding agents.
 
 Usage:
   model-peer ask claude "<focused question>"
@@ -58,7 +58,9 @@ Peer-chain depth:
 Environment:
   MODEL_PEER_REVIEWERS        Default comma-separated review model list
   MODEL_PEER_SYNTHESIZER      Default synthesis model
-  MODEL_PEER_MAX_DEPTH        Default peer-chain depth limit, 1-10 (1)
+  MODEL_PEER_MAX_DEPTH        Default peer-chain depth limit, 1-10 (1). Inside a
+                              chain this is the inherited cap: a peer may lower it
+                              but never raise it.
   MODEL_PEER_TIMEOUT          Default per-consultation timeout in seconds (600)
   MODEL_PEER_MAX_DIFF_BYTES   Max patch bytes embedded in review prompt (500000)
   MODEL_PEER_STACK            Managed by Model Peer; the active peer chain
@@ -84,14 +86,62 @@ MP_TMP_REVIEW=''
 MP_TMP_GEMINI=''
 MP_TMP_SCRATCH=''
 MP_TMP_PROBE=''
+# Reviewer worker PIDs, space-separated. Review fans out to background workers, so
+# an interrupt that reaches only the parent has to be forwarded down: a worker left
+# behind keeps a vendor CLI running, and that burns model quota nobody is waiting
+# for. Cleanup must also stop the workers before removing the directory they write
+# into, or a dying reviewer writes into a path that no longer exists.
+MP_REVIEW_WORKERS=''
 mp_cleanup() {
+  mp_stop_workers
   [[ -n "${MP_TMP_REVIEW:-}" ]] && rm -rf "$MP_TMP_REVIEW"
   [[ -n "${MP_TMP_GEMINI:-}" ]] && rm -rf "$MP_TMP_GEMINI"
   [[ -n "${MP_TMP_SCRATCH:-}" ]] && rm -f "$MP_TMP_SCRATCH"
   [[ -n "${MP_TMP_PROBE:-}" ]] && rm -rf "$MP_TMP_PROBE"
+  MP_TMP_REVIEW=''
+  MP_TMP_GEMINI=''
+  MP_TMP_SCRATCH=''
+  MP_TMP_PROBE=''
   return 0
 }
-trap mp_cleanup EXIT INT TERM
+
+# Stop every reviewer worker along with the vendor process tree underneath it.
+# Each worker leads its own process group, so the group can be signalled as a
+# unit. TERM goes to all of them before any of them is waited on: killing them one
+# at a time would spend a separate grace period per worker.
+mp_stop_workers() {
+  local pids="${MP_REVIEW_WORKERS:-}" pid grace alive
+  [[ -n "$pids" ]] || return 0
+  MP_REVIEW_WORKERS=''
+  {
+    for pid in $pids; do
+      kill -TERM "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+    done
+    grace=0
+    while (( grace < 8 )); do
+      alive=0
+      for pid in $pids; do
+        if kill -0 "$pid" 2>/dev/null; then alive=1; fi
+      done
+      (( alive == 1 )) || break
+      sleep 1
+      grace=$(( grace + 1 ))
+    done
+    for pid in $pids; do
+      kill -KILL "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
+      wait "$pid" || true
+    done
+  } 2>/dev/null
+  return 0
+}
+
+# INT and TERM must not merely clean up and fall through: the shell would carry on
+# into code whose temp directory it has just deleted. Re-raise the signal with the
+# handler removed, so the caller sees the conventional 130/143 rather than whatever
+# the interrupted statement happened to return.
+trap mp_cleanup EXIT
+trap 'mp_cleanup; trap - INT; kill -INT $$' INT
+trap 'mp_cleanup; trap - TERM; kill -TERM $$' TERM
 note() { printf '%s: %s\n' "$PROGRAM" "$*" >&2; }
 
 provider_label() {
@@ -118,7 +168,25 @@ provider_version() {
 }
 
 DEFAULT_MAX_DEPTH=1
+# Sanity bound on --depth, not a safety property: what makes depth safe is the
+# no-repeat rule and the delegation matrix, and neither depends on this number.
+# It is deliberately not configurable, because it never binds — see usable_depth.
 DEPTH_CEILING=10
+
+# The longest chain the guards can actually produce: a model may not repeat, so
+# the chain cannot outlast the supply of distinct models. This, not DEPTH_CEILING,
+# is what stops a chain in practice, and doctor reports it for that reason.
+usable_depth() {
+  local ceiling="$DEPTH_CEILING" installed=0 p
+  for p in claude codex gemini; do
+    if provider_installed "$p"; then installed=$(( installed + 1 )); fi
+  done
+  if (( installed < ceiling )); then
+    printf '%s' "$installed"
+  else
+    printf '%s' "$ceiling"
+  fi
+}
 
 # MODEL_PEER_STACK is the chain of models already active, e.g. "claude:codex".
 # Its length is the current depth; the depth limit caps how long it may grow.
@@ -261,6 +329,12 @@ resolve_timeout() {
 # macOS ships no coreutils `timeout`, so this polls instead. The child is asked to
 # stop with TERM and killed with KILL if it ignores that. Returns 124 on timeout,
 # matching the convention `timeout(1)` uses.
+#
+# MP_LIMIT_CHILD_PID publishes the process group currently being supervised, so a
+# signal handler further up can stop the vendor CLI rather than only the shell
+# above it. Each reviewer worker is its own subshell and therefore gets its own
+# copy; nothing shares this across reviewers.
+MP_LIMIT_CHILD_PID=''
 run_with_limit() {
   local label="$1" secs="$2"
   shift 2
@@ -278,12 +352,14 @@ run_with_limit() {
   "$@" &
   local pid=$!
   set +m
+  MP_LIMIT_CHILD_PID="$pid"
 
   local waited=0 status=0
   while kill -0 "$pid" 2>/dev/null; do
     if (( waited >= secs )); then
       err "$label exceeded the ${secs}s timeout; stopping it."
       kill_tree "$pid"
+      MP_LIMIT_CHILD_PID=''
       return "$TIMEOUT_EXIT"
     fi
     sleep 1
@@ -292,6 +368,7 @@ run_with_limit() {
       note "$label still working (${waited}s of ${secs}s)."
     fi
   done
+  MP_LIMIT_CHILD_PID=''
 
   if wait "$pid" 2>/dev/null; then
     status=0
@@ -790,6 +867,43 @@ $(cat "$reviews_dir/gemini.txt" 2>/dev/null || printf '[not run]')
 PROMPT
 }
 
+# Panel policy operates on a normalized outcome, not on a raw shell status: a
+# reviewer that exits 0 having written nothing has failed, and a reviewer that
+# timed out may still have left bytes in its output file.
+reviewer_completed() {
+  [[ "$(cat "$1/$2.status" 2>/dev/null)" == 'ok' ]]
+}
+
+# One reviewer worker. It runs as a background subshell, so every global it
+# touches is a private copy and — because bash resets inherited traps in a
+# subshell — the traps below are its own rather than the parent's. That split is
+# deliberate: the parent owns the shared temp directory and stays the only thing
+# that deletes it, while a worker owns exactly one vendor process tree.
+run_reviewer_worker() {
+  local provider="$1" max_depth="$2" prompt="$3" timeout="$4" out_file="$5"
+  trap 'stop_reviewer_worker 143' TERM
+  trap 'stop_reviewer_worker 130' INT
+
+  local status=0
+  run_provider "$provider" "$max_depth" "$prompt" "$timeout" > "$out_file" || status=$?
+  return "$status"
+}
+
+# Signalling the worker shell alone is not enough. run_with_limit puts the vendor
+# CLI in a process group of its own so it can be timed out as a unit, which also
+# means it survives the death of the shell that started it — as an orphan still
+# holding an open model call.
+stop_reviewer_worker() {
+  local code="${1:-143}"
+  if [[ -n "${MP_LIMIT_CHILD_PID:-}" ]]; then
+    kill_tree "$MP_LIMIT_CHILD_PID"
+  fi
+  if [[ -n "${MP_TMP_GEMINI:-}" ]]; then
+    rm -rf "$MP_TMP_GEMINI"
+  fi
+  exit "$code"
+}
+
 cmd_review() {
   local reviewers="${MODEL_PEER_REVIEWERS:-}"
   local synthesizer="${MODEL_PEER_SYNTHESIZER:-}"
@@ -867,13 +981,26 @@ USAGE
   [[ -n "$reviewers" ]] || reviewers="$(installed_reviewers)"
   split_models "$reviewers"
 
-  local valid=() p
+  local valid=() p seen=''
   for p in "${MODELS[@]}"; do
     case "$p" in
       claude|codex|gemini) ;;
       '') continue ;;
       *) err "unknown review model '$p'."; return 2 ;;
     esac
+    # The same rule the chain guard enforces, applied across the panel: a model may
+    # not appear twice. One model's opinion counted twice is not two independent
+    # observations, and the panel would report itself complete on the strength of a
+    # duplicate. Both copies would also own the same output file — serially the
+    # second overwrote the first, in parallel they race.
+    case ":$seen:" in
+      *":$p:"*)
+        err "review model '$p' is listed more than once; a panel needs distinct models."
+        err 'Running one model twice is one opinion counted twice, not a cross-model review.'
+        return 2
+        ;;
+    esac
+    seen="${seen:+$seen:}$p"
     provider_installed "$p" || {
       err "reviewer '$p' is requested but not installed."
       return 127
@@ -909,30 +1036,62 @@ USAGE
   make_review_context "$root" "$context" "$max_bytes"
 
   printf '\nModel Peer review: %s\n' "$(IFS=,; echo "${valid[*]}")" >&2
-  printf 'Reviewers run independently; synthesis: %s\n' "$synthesizer" >&2
+  printf 'Reviewers run independently and in parallel; synthesis: %s\n' "$synthesizer" >&2
   if (( timeout > 0 )); then
     printf 'Per-reviewer timeout: %ss\n' "$timeout" >&2
   else
     printf 'Per-reviewer timeout: disabled\n' >&2
   fi
+  printf '\n' >&2
 
+  # Fan out. Reviewers are independent by construction, so there is nothing for one
+  # to wait on: start every requested reviewer before waiting for any of them. The
+  # reviewer phase then costs the slowest reviewer rather than the sum of all of
+  # them, and one vendor hanging no longer delays the *start* of the others.
+  #
+  # Each reviewer owns one output file. A `tee` per reviewer would put several
+  # model responses on the same stdout and leave the reviewer's own exit status
+  # behind a PIPESTATUS no longer readable once the pipeline is in the background.
+  #
+  # The inherited chain is preserved deliberately: at top level it is empty, so
+  # each reviewer starts fresh, but a review launched from inside a peer chain
+  # stays subject to the same depth guard and cannot escape it.
+  local -a worker_pids=()
+  local i=0 pid
+  for p in "${valid[@]}"; do
+    prompt="$(review_prompt "$p" "$focus" "$context")"
+    printf 'Starting %s independent review...\n' "$(provider_label "$p")" >&2
+    # Job control gives each worker a process group of its own, so cleanup can
+    # signal one worker subtree without reaching its siblings or the parent.
+    set -m
+    run_reviewer_worker "$p" "$max_depth" "$prompt" "$timeout" "$tmpdir/$p.txt" &
+    pid=$!
+    set +m
+    worker_pids[i]="$pid"
+    i=$(( i + 1 ))
+    MP_REVIEW_WORKERS="${MP_REVIEW_WORKERS:+$MP_REVIEW_WORKERS }$pid"
+  done
+
+  # Fan in. Waiting in requested order serializes nothing, because every worker is
+  # already running: a reviewer that finished while the parent was blocked on an
+  # earlier one is reaped the moment its turn comes. That is why no `wait -n` is
+  # needed here, which matters because Bash 3.2 does not have it.
+  #
+  # Every requested reviewer is waited for before any panel rule is applied. Two
+  # early successes are not a panel decision while a third may still contribute,
+  # and --strict cannot be evaluated without the complete set of outcomes.
+  #
   # Kept as a counter plus a newline-delimited string rather than arrays: Bash 3.2
   # expands an empty array under `set -u` as an error, and this stays readable.
   local completed=0 dropped='' reason rc
+  i=0
   for p in "${valid[@]}"; do
-    printf '\n=== %s independent review ===\n\n' "$(provider_label "$p")" >&2
-    prompt="$(review_prompt "$p" "$focus" "$context")"
-    # The inherited chain is preserved deliberately: at top level it is empty, so
-    # each reviewer starts fresh, but a review launched from inside a peer chain
-    # stays subject to the same depth guard and cannot escape it.
-    #
-    # tee keeps the review streaming to the terminal as it arrives while also
-    # capturing it for synthesis; PIPESTATUS[0] is the reviewer's own status,
-    # read inside the `if` so `set -e` cannot abort first.
-    if run_provider "$p" "$max_depth" "$prompt" "$timeout" | tee "$tmpdir/$p.txt"; then
+    pid="${worker_pids[$i]}"
+    i=$(( i + 1 ))
+    if wait "$pid"; then
       rc=0
     else
-      rc="${PIPESTATUS[0]}"
+      rc=$?
     fi
 
     reason=''
@@ -949,13 +1108,31 @@ USAGE
 
     if [[ -n "$reason" ]]; then
       err "$(provider_label "$p") $reason; dropping it from the panel."
+      # Whatever a dropped reviewer wrote before it failed is a partial answer, not
+      # a review. Replacing the file keeps it out of both the replay and the
+      # synthesis input: a truncated finding read as a completed one is worse than
+      # no finding at all.
       printf '[reviewer %s and was dropped from the panel]\n' "$reason" > "$tmpdir/$p.txt"
+      printf 'dropped\n' > "$tmpdir/$p.status"
       dropped="${dropped}$(provider_label "$p") — $reason
 "
       failed=1
     else
+      note "$(provider_label "$p") completed."
+      printf 'ok\n' > "$tmpdir/$p.status"
       completed=$(( completed + 1 ))
     fi
+  done
+  MP_REVIEW_WORKERS=''
+
+  # Replay the reviews that survived. Order follows the requested model list, never
+  # the order the reviewers happened to finish in, so stdout is byte-identical from
+  # run to run and stays pipeable. Headers stay on stderr with the rest of the
+  # progress reporting; only model output reaches stdout.
+  for p in "${valid[@]}"; do
+    reviewer_completed "$tmpdir" "$p" || continue
+    printf '\n=== %s independent review ===\n\n' "$(provider_label "$p")" >&2
+    cat "$tmpdir/$p.txt"
   done
 
   # A cross-model review needs at least two independent views to be worth the
@@ -1111,18 +1288,28 @@ Only then does a synthesizer reconcile the findings. Reviewers are always leaves
 none of them consults another model, which is what makes agreement between them
 real signal rather than an echo.
 
+Because they are independent, they also run at the same time.
+
 Run it before opening a pull request, and again after any change to
 security-sensitive code.
 
 ```bash
 model-peer review "Focus on authorization and tenant isolation"
-model-peer review --models @@PEER_A@@,@@PEER_B@@     # exclude yourself
-model-peer review --timeout 300                       # bound each reviewer
+model-peer review --models @@PEER_A@@,@@PEER_B@@   # exclude yourself
+model-peer review --timeout 300   # bound each reviewer, not the whole panel
 ```
 
-It takes minutes and prints progress on stderr. Let it finish. A reviewer that
-times out, fails, or returns nothing is dropped and named; synthesis needs two
-survivors and says so when the panel was incomplete.
+It takes minutes. Let it finish, and do not be alarmed by how it looks while it
+runs:
+
+- Progress from several models arrives on stderr at once, interleaved, in a
+  different order each run. That is normal.
+- **Nothing appears on stdout until every reviewer has finished.** The reviews are
+  then printed together, in the order the models were requested. A long silence is
+  the panel working, not a hang.
+
+A reviewer that times out, fails, or returns nothing is dropped and named;
+synthesis needs two survivors and says so when the panel was incomplete.
 
 ## What to do with the report
 
@@ -1238,8 +1425,10 @@ Run an independent cross-model review of the current working tree with
 \`model-peer review\`, passing \`\$ARGUMENTS\` as the focus when it is non-empty.
 
 Every installed model reviews the same diff without seeing the others'
-conclusions, then a synthesizer reconciles them. This takes a few minutes and
-prints progress on stderr — let it finish.
+conclusions, then a synthesizer reconciles them. Reviewers run at the same time,
+so this takes a few minutes and looks busy: stderr carries interleaved progress
+from several models, and nothing reaches stdout until the whole panel has
+finished. Let it finish.
 
 Then:
 
@@ -1716,9 +1905,50 @@ cmd_trust() {
 # not error: headless, with stdin closed, it blocks on an auth prompt nobody can
 # answer, and a review just hangs. Naming that state costs one file read.
 # shellcheck disable=SC2016  # backticks below are literal prose, not substitution
+# Gemini loads a .env of its own before it validates anything, searching from the
+# current directory upward and preferring <dir>/.gemini/.env over <dir>/.env, then
+# falling back to ~/.gemini/.env and ~/.env. A key set there is invisible to this
+# process, which is how Model Peer came to report a working setup as broken.
+#
+# Only the presence of the assignment is checked. The value is never read.
+gemini_env_defines() {
+  local name="$1" dir file
+  dir="$PWD"
+  while :; do
+    for file in "$dir/.gemini/.env" "$dir/.env"; do
+      if [[ -f "$file" ]] && grep -Eq "^[[:space:]]*(export[[:space:]]+)?$name=" "$file" 2>/dev/null; then
+        return 0
+      fi
+    done
+    if [[ "$dir" == '/' || -z "$dir" ]]; then
+      break
+    fi
+    dir="$(dirname "$dir")"
+  done
+  for file in "$HOME/.gemini/.env" "$HOME/.env"; do
+    if [[ -f "$file" ]] && grep -Eq "^[[:space:]]*(export[[:space:]]+)?$name=" "$file" 2>/dev/null; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Mirrors Gemini CLI 0.46's own validateAuthMethod, read out of the shipping bundle
+# rather than guessed at:
+#
+#   oauth-personal / compute-default-credentials   returns valid unconditionally
+#   gemini-api-key   GEMINI_API_KEY from the environment or a loaded .env, OR a key
+#                    in its credential store, which no shell can see
+#   vertex-ai        GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION, or GOOGLE_API_KEY
+#   anything else    rejected outright as an invalid method
+#
+# Earlier versions got every branch of this wrong, and the OAuth one was invented
+# whole: it reported "no account is signed in" from google_accounts.json, a file
+# validateAuthMethod never reads. Reporting a working setup as broken sends people
+# to fix what is not wrong and teaches them to ignore the diagnostic that matters,
+# so nothing here states a verdict it cannot support.
 gemini_auth_status() {
   local settings="$HOME/.gemini/settings.json"
-  local accounts="$HOME/.gemini/google_accounts.json"
   local selected=''
 
   if [[ -f "$settings" ]]; then
@@ -1726,40 +1956,42 @@ gemini_auth_status() {
   fi
 
   case "$selected" in
+    *oauth*|*personal*|*login*|*compute-default*)
+      printf 'OAuth — Gemini accepts this without checking a local credential'
+      ;;
     *api-key*)
-      if [[ -n "${GEMINI_API_KEY:-}${GOOGLE_API_KEY:-}" ]]; then
-        printf 'API key (configured, key present)'
+      if [[ -n "${GEMINI_API_KEY:-}" ]]; then
+        printf 'API key (GEMINI_API_KEY set)'
+      elif gemini_env_defines GEMINI_API_KEY; then
+        printf 'API key (GEMINI_API_KEY set in a .env that Gemini loads)'
       else
-        printf 'BROKEN — configured for an API key, but neither GEMINI_API_KEY nor\n'
-        printf '                       GOOGLE_API_KEY is set. Headless calls will hang rather than\n'
-        printf '                       fail, because Gemini waits on a prompt that stdin cannot\n'
-        printf '                       answer. Export a key, or re-run `gemini` and pick another\n'
-        printf '                       sign-in method.'
+        printf 'API key selected, and no GEMINI_API_KEY is visible in the environment\n'
+        printf '                       or in a .env Gemini would load. It may still hold one in its\n'
+        printf '                       credential store, which no shell can read — so this is not\n'
+        printf '                       necessarily a problem. If there is no key at all, a headless\n'
+        printf '                       call hangs rather than fails, because Gemini waits on a prompt\n'
+        printf '                       stdin cannot answer. Run: model-peer doctor --probe'
       fi
       ;;
     *vertex*)
-      if [[ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}${GOOGLE_CLOUD_PROJECT:-}" ]]; then
-        printf 'Vertex AI (configured, credentials present)'
+      if [[ -n "${GOOGLE_CLOUD_PROJECT:-}" && -n "${GOOGLE_CLOUD_LOCATION:-}" ]]; then
+        printf 'Vertex AI (project and location set)'
+      elif [[ -n "${GOOGLE_API_KEY:-}" ]]; then
+        printf 'Vertex AI (GOOGLE_API_KEY set, express mode)'
+      elif gemini_env_defines GOOGLE_CLOUD_PROJECT || gemini_env_defines GOOGLE_API_KEY; then
+        printf 'Vertex AI (configured in a .env that Gemini loads)'
       else
-        printf 'BROKEN — configured for Vertex AI, but no credentials are set'
-      fi
-      ;;
-    *oauth*|*personal*|*login*)
-      if [[ -f "$accounts" ]] && ! grep -Fq '"active": null' "$accounts"; then
-        printf 'OAuth (signed in)'
-      else
-        printf 'BROKEN — configured for OAuth, but no account is signed in (run: gemini)'
+        printf 'Vertex AI selected, and neither GOOGLE_CLOUD_PROJECT with\n'
+        printf '                       GOOGLE_CLOUD_LOCATION nor GOOGLE_API_KEY is visible here.\n'
+        printf '                       Gemini requires one of those for this method and will refuse\n'
+        printf '                       to start without it. Run: model-peer doctor --probe'
       fi
       ;;
     '')
-      if [[ -n "${GEMINI_API_KEY:-}${GOOGLE_API_KEY:-}${GOOGLE_APPLICATION_CREDENTIALS:-}" ]]; then
-        printf 'environment-based auth detected'
-      else
-        printf 'no method chosen yet; run `gemini` once to sign in'
-      fi
+      printf 'no method recorded yet; Gemini asks on first run'
       ;;
     *)
-      printf '%s (unrecognized; Model Peer cannot verify it)' "$selected"
+      printf "'%s' is not a method Gemini recognizes; it rejects this outright" "$selected"
       ;;
   esac
 }
@@ -1994,12 +2226,17 @@ cmd_doctor() {
     printf '\nConsultation timeout:   invalid MODEL_PEER_TIMEOUT=%s\n' "${MODEL_PEER_TIMEOUT:-}"
   fi
 
-  local effective_depth
+  local effective_depth usable
+  usable="$(usable_depth)"
   if effective_depth="$(resolve_max_depth '' 2>/dev/null)"; then
-    printf '\nPeer-chain depth limit: %s (max %s)\n' "$effective_depth" "$DEPTH_CEILING"
+    printf '\nPeer-chain depth limit: %s (ceiling %s)\n' "$effective_depth" "$DEPTH_CEILING"
   else
     printf '\nPeer-chain depth limit: invalid MODEL_PEER_MAX_DEPTH=%s\n' "${MODEL_PEER_MAX_DEPTH:-}"
   fi
+  # The ceiling is rarely what actually binds. Report the real limit so raising
+  # the ceiling and seeing no change is not a mystery.
+  printf 'Longest usable chain:   %s (a model may not appear twice, and %s installed)\n' \
+    "$usable" "$(installed_reviewers | tr ',' ' ' | wc -w | tr -d ' ')"
   if [[ -n "${MODEL_PEER_STACK:-}" ]]; then
     printf 'Active peer chain:      %s (depth %s)\n' "$MODEL_PEER_STACK" "$(stack_depth)"
   fi

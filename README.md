@@ -54,6 +54,10 @@ None of them sees the others' conclusions; only then does a synthesizer reconcil
 the findings. Because reviewers can't anchor on each other, agreement between them
 is real signal.
 
+Reviewers are independent, so they also run in parallel: a review costs roughly the
+slowest model rather than the sum of them, and Model Peer waits for the whole panel
+before synthesizing.
+
 ```text
               +--> Claude --+
               |             |
@@ -65,7 +69,7 @@ git changes --+--> Codex ---+--> synthesis
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/makedirectory/ModelPeer/v0.5.1/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/makedirectory/ModelPeer/v0.6.0/install.sh | bash
 ```
 
 Or clone and run `./install.sh`. As with any remote shell installer, inspect it
@@ -173,6 +177,16 @@ Questions and ideas are welcome in
 Security issues should go through
 [private reporting](https://github.com/makedirectory/ModelPeer/security) rather
 than a public issue.
+
+## ☕ Coffee?
+
+If a peer caught something before it shipped, I'd genuinely love to hear about it.
+If a peer told you something confidently wrong — we've never met, and this is the
+first you're hearing of it. (Peers are advisory. It says so above.)
+
+Either way, if it saved you a review cycle, you can buy me a coffee:
+
+**[buy me a coffee →](https://venmo.com/u/Andrew-Schwartz-92)**
 
 ## License
 

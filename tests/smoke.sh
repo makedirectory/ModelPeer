@@ -10,53 +10,122 @@ export PATH="$TMP/bin:$ROOT/bin:$PATH"
 export MODEL_PEER_BIN_DIR="$TMP/install-bin"
 LOG="$TMP/calls.log"
 export MODEL_PEER_TEST_LOG="$LOG"
+export MP_TEST_LIB="$TMP/bin/stub-lib.sh"
+
+# Shared stub behaviour. Reviewers run concurrently, so several stubs append to
+# the call log at once — and a review prompt is larger than a single write(), so
+# two records interleaved mid-prompt would break every assertion that greps for a
+# contiguous string. mkdir is atomic and serves as the lock; the spin is bounded
+# so a stub killed by one of the timeout tests can never wedge the others.
+cat > "$MP_TEST_LIB" <<'LIB'
+mp_stub_append_file() {
+  local dest="$1" src="$2" i=0
+  while (( i < 200 )); do
+    if mkdir "$dest.lock" 2>/dev/null; then
+      cat "$src" >> "$dest"
+      rmdir "$dest.lock" 2>/dev/null || true
+      return 0
+    fi
+    sleep 0.05
+    i=$(( i + 1 ))
+  done
+  cat "$src" >> "$dest"
+}
+
+# One record per invocation: argv, the generated Gemini policy when one was passed
+# (model-peer deletes it as soon as the stub exits), and whether stdin was closed.
+mp_stub_log() {
+  local name="$1" tmp prev='' a x=''
+  shift
+  tmp="$(mktemp "${TMPDIR:-/tmp}/mp-stub.XXXXXX")"
+  {
+    printf '%s ARGS:' "$(printf '%s' "$name" | tr '[:lower:]' '[:upper:]')"
+    printf ' <%s>' "$@"
+    for a in "$@"; do
+      if [[ "$prev" == '--policy' && -f "$a" ]]; then
+        printf '\nGEMINI POLICY BEGIN\n'
+        cat "$a"
+        printf '\nGEMINI POLICY END\n'
+      fi
+      prev="$a"
+    done
+    if [[ -t 0 ]]; then
+      printf ' STDIN=TTY\n'
+    elif IFS= read -r -t 1 x; then
+      printf ' STDIN=%s\n' "$x"
+    else
+      printf ' STDIN=EOF\n'
+    fi
+  } > "$tmp"
+  mp_stub_append_file "$MODEL_PEER_TEST_LOG" "$tmp"
+  rm -f "$tmp"
+}
+
+# The concurrency barrier: each reviewer records that it started, then blocks
+# until every requested reviewer has done the same. Serial orchestration can never
+# open it, which makes this a structural proof of fan-out rather than a
+# wall-clock guess. Inert unless MP_TEST_BARRIER_DIR is set.
+mp_stub_barrier() {
+  local name="$1" dir="${MP_TEST_BARRIER_DIR:-}" waited=0 seen wanted m
+  [[ -n "$dir" ]] || return 0
+  : > "$dir/started-$name"
+  wanted=0
+  for m in ${MP_TEST_BARRIER_MODELS:-}; do wanted=$(( wanted + 1 )); done
+  while (( waited < 200 )); do
+    seen=0
+    for m in ${MP_TEST_BARRIER_MODELS:-}; do
+      if [[ -e "$dir/started-$m" ]]; then seen=$(( seen + 1 )); fi
+    done
+    if (( seen >= wanted )); then return 0; fi
+    sleep 0.1
+    waited=$(( waited + 1 ))
+  done
+  printf 'barrier never opened for %s\n' "$name" >&2
+  return 1
+}
+LIB
 
 cat > "$TMP/bin/claude" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+. "$MP_TEST_LIB"
 if [[ "${1:-}" == auth && "${2:-}" == status ]]; then exit 0; fi
-printf 'CLAUDE ARGS:' >> "$MODEL_PEER_TEST_LOG"
-printf ' <%s>' "$@" >> "$MODEL_PEER_TEST_LOG"
-if [[ -t 0 ]]; then printf ' STDIN=TTY\n' >> "$MODEL_PEER_TEST_LOG"; else if IFS= read -r -t 1 x; then printf ' STDIN=%s\n' "$x" >> "$MODEL_PEER_TEST_LOG"; else printf ' STDIN=EOF\n' >> "$MODEL_PEER_TEST_LOG"; fi; fi
+if [[ "${1:-}" == --version ]]; then printf '9.9.9\n'; exit 0; fi
+mp_stub_log claude "$@"
+mp_stub_barrier claude
 printf 'claude review output\n'
 EOF
 
 cat > "$TMP/bin/codex" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+. "$MP_TEST_LIB"
 if [[ "${1:-}" == login && "${2:-}" == status ]]; then exit 0; fi
-printf 'CODEX ARGS:' >> "$MODEL_PEER_TEST_LOG"
-printf ' <%s>' "$@" >> "$MODEL_PEER_TEST_LOG"
-if [[ -t 0 ]]; then printf ' STDIN=TTY\n' >> "$MODEL_PEER_TEST_LOG"; else if IFS= read -r -t 1 x; then printf ' STDIN=%s\n' "$x" >> "$MODEL_PEER_TEST_LOG"; else printf ' STDIN=EOF\n' >> "$MODEL_PEER_TEST_LOG"; fi; fi
+if [[ "${1:-}" == --version ]]; then printf '9.9.9\n'; exit 0; fi
+mp_stub_log codex "$@"
+mp_stub_barrier codex
 printf 'codex review output\n'
 EOF
 
 cat > "$TMP/bin/gemini" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+. "$MP_TEST_LIB"
 # model-peer feature-detects --skip-trust from --help before invoking Gemini.
 # Answer that without logging, so the probe does not pollute call assertions.
 if [[ "$*" == *--help* ]]; then
   printf '      --skip-trust                Trust the current workspace for this session.\n'
   exit 0
 fi
-printf 'GEMINI ARGS:' >> "$MODEL_PEER_TEST_LOG"
-printf ' <%s>' "$@" >> "$MODEL_PEER_TEST_LOG"
-# Capture the generated policy; model-peer deletes it as soon as we exit.
-prev=''
-for a in "$@"; do
-  if [[ "$prev" == '--policy' && -f "$a" ]]; then
-    { printf '\nGEMINI POLICY BEGIN\n'; cat "$a"; printf '\nGEMINI POLICY END\n'; } >> "$MODEL_PEER_TEST_LOG"
-  fi
-  prev="$a"
-done
-if [[ -t 0 ]]; then printf ' STDIN=TTY\n' >> "$MODEL_PEER_TEST_LOG"; else if IFS= read -r -t 1 x; then printf ' STDIN=%s\n' "$x" >> "$MODEL_PEER_TEST_LOG"; else printf ' STDIN=EOF\n' >> "$MODEL_PEER_TEST_LOG"; fi; fi
+if [[ "${1:-}" == --version ]]; then printf '9.9.9\n'; exit 0; fi
+mp_stub_log gemini "$@"
+mp_stub_barrier gemini
 printf 'gemini review output\n'
 EOF
 chmod +x "$TMP/bin/claude" "$TMP/bin/codex" "$TMP/bin/gemini"
 
 # Basic CLI/version.
-[[ "$(model-peer --version)" == 'model-peer 0.5.1' ]]
+[[ "$(model-peer --version)" == 'model-peer 0.6.0' ]]
 
 # Ask dispatch + safety args + stdin closure.
 printf 'sentinel\n' | model-peer ask codex 'review this' >/dev/null
@@ -134,7 +203,7 @@ else
 fi
 MODEL_PEER_STACK='claude:codex' model-peer ask gemini --depth 3 'third hop' >/dev/null
 
-# Depth values outside 1-10 and non-numeric values are rejected.
+# Depth values outside the ceiling and non-numeric values are rejected.
 for bad in 0 11 abc -1; do
   if model-peer ask codex --depth "$bad" 'x' >/dev/null 2>&1; then
     echo "expected --depth $bad to be rejected" >&2; exit 1
@@ -142,6 +211,27 @@ for bad in 0 11 abc -1; do
     [[ $? -eq 2 ]]
   fi
 done
+
+# Depth is a limit, never a permission: the guards must hold identically at the
+# top of the range as at the bottom. This is the invariant the whole depth design
+# rests on, so it is asserted at the maximum rather than assumed.
+if MODEL_PEER_STACK='codex' model-peer ask codex --depth 10 'self' >/dev/null 2>&1; then
+  echo 'expected the no-repeat guard to hold at maximum depth' >&2; exit 1
+else
+  [[ $? -eq 64 ]]
+fi
+: > "$LOG"
+model-peer ask gemini --depth 10 'leaf' >/dev/null 2>&1
+grep -Fq 'Remaining peer-chain depth: 0' "$LOG"
+grep -Fq 'Do not invoke Claude Code' "$LOG"
+awk '/GEMINI POLICY BEGIN/,/GEMINI POLICY END/' "$LOG" | grep -Fq 'run_shell_command'
+# Claude's grant stays scoped to the delegate entry point at any depth.
+: > "$LOG"
+model-peer ask claude --depth 10 'wide' >/dev/null 2>&1
+grep -Fq '<--allowedTools> <Bash(model-peer _delegate:*)>' "$LOG"
+if grep -Fq '<Bash(model-peer:*)>' "$LOG"; then
+  echo 'expected no unrestricted grant at maximum depth' >&2; exit 1
+fi
 
 # Depth 1 keeps Claude tool-restricted; delegation scopes execution to the
 # model-peer command namespace rather than granting a general shell.
@@ -253,6 +343,19 @@ if model-peer review --models claude,codex --depth=2 'chain' >/dev/null 2>&1; th
 else
   [[ $? -eq 2 ]]
 fi
+
+# A model may not appear twice in one panel — the same rule the chain guard applies
+# within a chain. Two copies of one model are one opinion counted twice, and both
+# would own the same reviewer output file: serially the second overwrote the first,
+# in parallel they race, and either way the panel reports itself complete.
+for dup in 'gemini,gemini' 'claude,codex,claude'; do
+  if model-peer review --models "$dup" --synthesizer claude 'dupes' >/dev/null 2>"$TMP/dupe.err"; then
+    echo "expected --models $dup to be rejected" >&2; exit 1
+  else
+    [[ $? -eq 2 ]]
+  fi
+  grep -Fq 'listed more than once' "$TMP/dupe.err"
+done
 
 # A review launched from inside a peer chain stays under the depth guard.
 if MODEL_PEER_STACK='claude:codex' model-peer review --models claude,codex 'nested' >/dev/null 2>&1; then
@@ -410,6 +513,422 @@ if grep -Fq 'skipme.log' "$LOG"; then
   echo 'expected gitignored files to stay out of the review context' >&2; exit 1
 fi
 rm -rf "$TMP/repo/src" "$TMP/repo/skipme.log" "$TMP/repo/.gitignore"
+
+# ---------------------------------------------------------------------------
+# Parallel reviewers. Independent reviewers are scheduled independently: every
+# requested reviewer starts before the parent waits for any of them.
+# ---------------------------------------------------------------------------
+
+# The concurrency barrier is the primary proof, and far less flaky than asserting
+# elapsed time on a shared CI runner. Each stub records that it started and blocks
+# until all three have; under serial orchestration the first reviewer can never
+# observe the others, so it fails and the panel collapses.
+BARRIER="$TMP/barrier"
+mkdir -p "$BARRIER"
+MP_TEST_BARRIER_DIR="$BARRIER" MP_TEST_BARRIER_MODELS='claude codex gemini' \
+  model-peer review --models claude,codex,gemini --synthesizer claude --timeout 60 \
+  'concurrency barrier' >/dev/null 2>"$TMP/barrier.err"
+for m in claude codex gemini; do
+  [[ -e "$BARRIER/started-$m" ]] || { echo "expected $m to have started" >&2; exit 1; }
+done
+grep -Fq 'Starting Claude independent review...' "$TMP/barrier.err"
+grep -Fq 'Starting Gemini independent review...' "$TMP/barrier.err"
+for label in Claude Codex Gemini; do
+  grep -Fq "$label completed." "$TMP/barrier.err"
+done
+rm -rf "$BARRIER"
+
+# Reviewer output must never interleave on stdout, and the replay must follow the
+# requested model list rather than completion order. These stubs finish in exactly
+# the reverse of the requested order and emit their reviews line by line.
+mk_chatty_stub() {
+  local m="$1" delay="$2" tag
+  tag="$(printf '%s' "$m" | tr '[:lower:]' '[:upper:]')"
+  cat > "$TMP/bin/$m" <<STUB
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "\$*" == *--help* ]]; then printf '      --skip-trust  Trust the workspace\n'; exit 0; fi
+if [[ "\$*" == *'synthesis editor'* ]]; then printf 'SYNTHESIS\n'; exit 0; fi
+sleep $delay
+printf '$tag-A\n'
+sleep 0.3
+printf '$tag-B\n'
+sleep 0.3
+printf '$tag-C\n'
+STUB
+  chmod +x "$TMP/bin/$m"
+}
+mk_chatty_stub claude 2
+mk_chatty_stub codex 1
+mk_chatty_stub gemini 0
+model-peer review --models claude,codex,gemini --synthesizer claude \
+  'replay order' > "$TMP/replay.out" 2>/dev/null
+for tag in CLAUDE CODEX GEMINI; do
+  printf '%s-A\n%s-B\n%s-C\n' "$tag" "$tag" "$tag" > "$TMP/expect-block.txt"
+  grep -A2 "^$tag-A\$" "$TMP/replay.out" | cmp -s - "$TMP/expect-block.txt" \
+    || { echo "expected $tag output to replay as one contiguous block" >&2; exit 1; }
+done
+# Gemini finished first and Claude last, but replay follows the requested order.
+replay_line() { grep -n "^$1\$" "$TMP/replay.out" | head -1 | cut -d: -f1; }
+[[ "$(replay_line CLAUDE-A)" -lt "$(replay_line CODEX-A)" ]] \
+  || { echo 'expected replay in requested order, not completion order' >&2; exit 1; }
+[[ "$(replay_line CODEX-A)" -lt "$(replay_line GEMINI-A)" ]] \
+  || { echo 'expected replay in requested order, not completion order' >&2; exit 1; }
+
+# Secondary evidence only: three reviewers that each take 4s must not cost 12s.
+# The threshold is deliberately generous so a loaded runner does not fail it.
+for m in claude codex gemini; do
+  cat > "$TMP/bin/$m" <<STUB
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "\$*" == *--help* ]]; then printf '      --skip-trust  Trust the workspace\n'; exit 0; fi
+if [[ "\$*" == *'synthesis editor'* ]]; then printf 'synthesis\n'; exit 0; fi
+sleep 5
+printf '$m review\n'
+STUB
+  chmod +x "$TMP/bin/$m"
+done
+OVERLAP_START="$(date +%s)"
+model-peer review --models claude,codex,gemini --synthesizer claude 'overlap' >/dev/null 2>&1
+OVERLAP_ELAPSED=$(( $(date +%s) - OVERLAP_START ))
+(( OVERLAP_ELAPSED < 12 )) \
+  || { echo "reviewers did not overlap (${OVERLAP_ELAPSED}s for three 5s reviewers)" >&2; exit 1; }
+
+# Synthesis must not start until every requested reviewer has reached a terminal
+# state, even though one of them finishes long before the other.
+MARKERS="$TMP/markers.txt"
+: > "$MARKERS"
+for m in codex gemini; do
+  case "$m" in codex) delay=3 ;; *) delay=1 ;; esac
+  cat > "$TMP/bin/$m" <<STUB
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "\$*" == *--help* ]]; then printf '      --skip-trust  Trust the workspace\n'; exit 0; fi
+printf '$m-start\n' >> "\$MP_TEST_MARKERS"
+sleep $delay
+printf '$m-end\n' >> "\$MP_TEST_MARKERS"
+printf '$m review\n'
+STUB
+  chmod +x "$TMP/bin/$m"
+done
+cat > "$TMP/bin/claude" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'synthesis-start\n' >> "$MP_TEST_MARKERS"
+printf 'final report\n'
+STUB
+chmod +x "$TMP/bin/claude"
+MP_TEST_MARKERS="$MARKERS" model-peer review --models codex,gemini --synthesizer claude \
+  'synthesis ordering' >/dev/null 2>&1
+marker_line() { grep -n "^$1\$" "$MARKERS" | head -1 | cut -d: -f1; }
+for m in codex gemini; do
+  [[ "$(marker_line "$m-end")" -lt "$(marker_line synthesis-start)" ]] \
+    || { echo "expected synthesis to start only after $m finished" >&2; exit 1; }
+done
+
+# A reviewer that emits a partial answer and then hangs has reviewed nothing. Its
+# half-written finding must reach neither stdout nor the synthesizer: a truncated
+# finding read as a complete one is worse than no finding at all.
+cp "$TMP/bin/claude.real" "$TMP/bin/claude"
+cp "$TMP/bin/gemini.real" "$TMP/bin/gemini"
+cat > "$TMP/bin/codex" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == login && "${2:-}" == status ]]; then exit 0; fi
+printf 'CODEX-PARTIAL-FINDING\n'
+sleep 111
+STUB
+chmod +x "$TMP/bin/codex"
+: > "$LOG"
+model-peer review --models claude,codex,gemini --synthesizer claude --timeout 3 \
+  'partial output' > "$TMP/partial-out.txt" 2>/dev/null
+if grep -Fq 'CODEX-PARTIAL-FINDING' "$TMP/partial-out.txt"; then
+  echo 'expected a dropped reviewer partial answer to stay off stdout' >&2; exit 1
+fi
+if grep -Fq 'CODEX-PARTIAL-FINDING' "$LOG"; then
+  echo 'expected a dropped reviewer partial answer to stay out of synthesis' >&2; exit 1
+fi
+grep -Fq 'timed out after 3s and was dropped from the panel' "$LOG"
+
+# --strict refuses to synthesize, but the reviews that did complete are still
+# replayed: hiding finished work because a sibling failed helps nobody.
+if model-peer review --models claude,codex,gemini --synthesizer claude --timeout 3 \
+    --strict 'strict replay' > "$TMP/strict-out.txt" 2>/dev/null; then
+  echo 'expected --strict to refuse an incomplete panel' >&2; exit 1
+else
+  [[ $? -eq 1 ]]
+fi
+grep -Fq 'claude review output' "$TMP/strict-out.txt"
+grep -Fq 'gemini review output' "$TMP/strict-out.txt"
+cp "$TMP/bin/codex.real" "$TMP/bin/codex"
+
+# Ctrl-C during a parallel review must take down every worker and every vendor
+# process tree beneath them. Parallelizing widens that tree, which is why this
+# matters more here than it did serially.
+cat > "$TMP/bin/blocker" <<'STUB'
+#!/usr/bin/env bash
+exec sleep 137
+STUB
+chmod +x "$TMP/bin/blocker"
+for m in claude codex gemini; do
+  cat > "$TMP/bin/$m" <<'STUB'
+#!/usr/bin/env bash
+if [[ "$*" == *--help* ]]; then printf '      --skip-trust  Trust the workspace\n'; exit 0; fi
+blocker
+STUB
+  chmod +x "$TMP/bin/$m"
+done
+# Compare against a snapshot rather than an empty temp directory: an unrelated
+# stale directory from some earlier run must not be read as this run's leak.
+REVIEW_TMP_BEFORE="$(ls -d "${TMPDIR:-/tmp}"/model-peer-review.* 2>/dev/null || true)"
+# Job control has to be on here. Bash sets SIGINT to *ignored* in a background job
+# when job control is off, and a signal ignored on entry cannot be trapped — so
+# without this the interrupt is swallowed and the test silently proves nothing.
+# With it, this is the same signal disposition a user gets pressing Ctrl-C.
+set -m
+model-peer review --models claude,codex,gemini --synthesizer claude --timeout 120 \
+  'interrupt' >/dev/null 2>&1 &
+INT_PID=$!
+set +m
+sleep 5
+INT_START="$(date +%s)"
+kill -INT "$INT_PID"
+if wait "$INT_PID"; then INT_RC=0; else INT_RC=$?; fi
+INT_ELAPSED=$(( $(date +%s) - INT_START ))
+# Re-raising the signal is what makes this the conventional 130 rather than
+# whatever the interrupted statement happened to return.
+(( INT_RC == 130 )) \
+  || { echo "expected an interrupted review to exit 130 (got $INT_RC)" >&2; exit 1; }
+# And it must stop the panel, not merely clean up and let it run to its timeout.
+(( INT_ELAPSED < 30 )) \
+  || { echo "interrupt did not stop the panel promptly (${INT_ELAPSED}s)" >&2; exit 1; }
+sleep 2
+if pgrep -f 'sleep 137' >/dev/null 2>&1; then
+  echo 'interrupt left an orphaned vendor process behind' >&2; exit 1
+fi
+REVIEW_TMP_AFTER="$(ls -d "${TMPDIR:-/tmp}"/model-peer-review.* 2>/dev/null || true)"
+if [[ "$REVIEW_TMP_BEFORE" != "$REVIEW_TMP_AFTER" ]]; then
+  echo 'interrupt left the review temp directory behind' >&2; exit 1
+fi
+for m in claude codex gemini; do
+  cp "$TMP/bin/$m.real" "$TMP/bin/$m"
+done
+
+# ---------------------------------------------------------------------------
+# Cost safety. Every model invocation spends the user's money, so anything that
+# can be decided without one must be decided without one. Validation, guards,
+# help, and every --dry-run/--print/--check path must reach their answer having
+# consulted nobody.
+# ---------------------------------------------------------------------------
+
+# Runs the command and fails if it invoked any model. The stubs answer --version
+# and the vendors' auth/help probes without logging, because those cost nothing.
+no_model_call() {
+  : > "$LOG"
+  "$@" >/dev/null 2>&1 || true
+  if grep -q 'ARGS:' "$LOG"; then
+    echo "expected '$*' to invoke no model, but it did:" >&2
+    grep 'ARGS:' "$LOG" | cut -c1-120 >&2
+    exit 1
+  fi
+}
+
+# Informational and setup commands.
+no_model_call model-peer --version
+no_model_call model-peer --help
+no_model_call model-peer ask --help
+no_model_call model-peer review --help
+no_model_call model-peer init --help
+no_model_call model-peer update --help
+no_model_call model-peer doctor
+no_model_call model-peer init --dry-run
+no_model_call model-peer init --print
+no_model_call model-peer update --check
+no_model_call model-peer trust --check
+
+# Every validation error. A run that spends three consultations and *then*
+# discovers its arguments were wrong has charged the user for nothing.
+no_model_call model-peer review --models gemini,gemini
+no_model_call model-peer review --models bogus
+no_model_call model-peer review --models claude
+no_model_call model-peer review --depth 2
+no_model_call model-peer review --timeout abc
+no_model_call model-peer review --nope
+no_model_call env MODEL_PEER_MAX_DIFF_BYTES=abc model-peer review --models claude,codex
+no_model_call model-peer ask bogus 'question'
+no_model_call model-peer ask codex --depth 0
+no_model_call model-peer ask codex --depth 11
+no_model_call model-peer ask codex --timeout -1
+no_model_call model-peer ask codex --nope 'question'
+no_model_call model-peer _delegate init
+no_model_call model-peer _delegate codex --depth 9 'question'
+
+# Chain-guard refusals decide from the chain alone and must never pay to find out.
+no_model_call env MODEL_PEER_STACK=codex model-peer ask codex 'self'
+no_model_call env MODEL_PEER_STACK=codex:gemini:claude model-peer ask claude --depth 5 'cycle'
+no_model_call env MODEL_PEER_STACK=claude model-peer ask codex 'depth limit'
+no_model_call env MODEL_PEER_STACK='claude:codex' model-peer review --models claude,codex 'nested'
+
+# An empty prompt is rejected before the peer is launched.
+no_model_call sh -c 'model-peer ask codex </dev/null'
+
+# review outside a Git working tree, checked before anything is spent.
+mkdir -p "$TMP/not-a-repo"
+( cd "$TMP/not-a-repo" && no_model_call model-peer review --models claude,codex )
+
+# Exactly one consultation per requested reviewer, plus exactly one synthesis.
+# A double-invocation anywhere here silently doubles the bill.
+: > "$LOG"
+model-peer review --models claude,codex,gemini --synthesizer claude 'exactly once' >/dev/null 2>&1
+[[ "$(grep -c '^CODEX ARGS:' "$LOG")" -eq 1 ]] \
+  || { echo 'expected Codex to be consulted exactly once' >&2; exit 1; }
+[[ "$(grep -c '^GEMINI ARGS:' "$LOG")" -eq 1 ]] \
+  || { echo 'expected Gemini to be consulted exactly once' >&2; exit 1; }
+# Claude reviews and synthesizes here, so exactly twice and no more.
+[[ "$(grep -c '^CLAUDE ARGS:' "$LOG")" -eq 2 ]] \
+  || { echo 'expected Claude to be consulted exactly twice' >&2; exit 1; }
+
+# A reviewer that times out is dropped, never retried. Retrying would duplicate
+# usage and quietly extend the timeout the user asked for.
+cat > "$TMP/bin/codex" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+. "$MP_TEST_LIB"
+if [[ "${1:-}" == login && "${2:-}" == status ]]; then exit 0; fi
+if [[ "${1:-}" == --version ]]; then printf '9.9.9\n'; exit 0; fi
+mp_stub_log codex "$@"
+sleep 111
+STUB
+chmod +x "$TMP/bin/codex"
+: > "$LOG"
+model-peer review --models claude,codex,gemini --synthesizer claude --timeout 3 \
+  'no retry' >/dev/null 2>&1
+[[ "$(grep -c '^CODEX ARGS:' "$LOG")" -eq 1 ]] \
+  || { echo 'expected a timed-out reviewer to be dropped, not retried' >&2; exit 1; }
+cp "$TMP/bin/codex.real" "$TMP/bin/codex"
+
+# ---------------------------------------------------------------------------
+# Workspace integrity. A consultation is a read. Nothing Model Peer does to
+# answer one may change a single byte, mode, or index entry the user owns.
+# ---------------------------------------------------------------------------
+
+# Captures content, untracked files, file modes, and the Git index. The index
+# matters on its own: `git add -N` would make untracked files diffable and is
+# exactly the shortcut a review command must not take.
+snapshot_workspace() {
+  {
+    git status --porcelain=v1 --untracked-files=all
+    git diff --no-ext-diff --no-color
+    git diff --cached --no-ext-diff --no-color
+    git ls-files -s
+    # ls is fine here: the snapshot is only ever compared with another snapshot
+    # taken by this same function on this same platform.
+    # shellcheck disable=SC2012
+    find . -path ./.git -prune -o -type f -print | sort | while read -r f; do
+      ls -l "$f" | awk '{ print $1, $NF }'
+    done
+  } > "$1" 2>&1
+}
+
+snapshot_workspace "$TMP/ws-before.txt"
+model-peer ask codex 'workspace integrity' >/dev/null 2>&1
+model-peer ask gemini 'workspace integrity' >/dev/null 2>&1
+model-peer review --models claude,codex,gemini --synthesizer claude \
+  'workspace integrity' >/dev/null 2>&1
+snapshot_workspace "$TMP/ws-after.txt"
+if ! cmp -s "$TMP/ws-before.txt" "$TMP/ws-after.txt"; then
+  echo 'model-peer modified the workspace:' >&2
+  diff "$TMP/ws-before.txt" "$TMP/ws-after.txt" >&2 || true
+  exit 1
+fi
+
+# The review context file holds the entire diff, including untracked files. On a
+# shared machine that directory must not be readable by anyone else.
+cat > "$TMP/bin/codex" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == login && "${2:-}" == status ]]; then exit 0; fi
+if [[ "${1:-}" == --version ]]; then printf '9.9.9\n'; exit 0; fi
+for d in "${TMPDIR:-/tmp}"/model-peer-review.*; do
+  [[ -d "$d" ]] || continue
+  ls -ld "$d" | awk '{ print "REVIEWTMP", $1 }' >> "$MP_TEST_PERMS"
+done
+printf 'codex review output\n'
+STUB
+chmod +x "$TMP/bin/codex"
+: > "$TMP/perms.txt"
+MP_TEST_PERMS="$TMP/perms.txt" model-peer review --models claude,codex \
+  --synthesizer claude 'temp permissions' >/dev/null 2>&1
+grep -Fq 'REVIEWTMP drwx------' "$TMP/perms.txt" \
+  || { echo 'expected the review temp directory to exist and be private' >&2; exit 1; }
+if grep '^REVIEWTMP ' "$TMP/perms.txt" | grep -qv 'drwx------'; then
+  echo 'review temp directory is readable by other users' >&2; exit 1
+fi
+cp "$TMP/bin/codex.real" "$TMP/bin/codex"
+
+# ---------------------------------------------------------------------------
+# Security. Prompts, focus strings, and filenames are data. None of them may
+# reach a shell, and no consultation on any path may relax the read-only
+# contract or gain execution.
+# ---------------------------------------------------------------------------
+
+# Command substitution in a focus string is data, not code. The single quotes are
+# the point of the test: these must reach the model verbatim and never a shell.
+# shellcheck disable=SC2016
+model-peer review --models claude,codex --synthesizer claude \
+  '$(touch pwned-focus) `touch pwned-focus2`; touch pwned-focus3' >/dev/null 2>&1
+# ...and so is a prompt.
+# shellcheck disable=SC2016
+model-peer ask codex '$(touch pwned-ask) `touch pwned-ask2`' >/dev/null 2>&1
+# ...and so is a filename, which reaches git while the review context is built.
+# shellcheck disable=SC2016
+printf 'payload\n' > '$(touch pwned-file).txt'
+model-peer review --models claude,codex --synthesizer claude 'hostile filename' >/dev/null 2>&1
+for bad in pwned-focus pwned-focus2 pwned-focus3 pwned-ask pwned-ask2 pwned-file; do
+  if [[ -e "$bad" ]]; then
+    echo "expected '$bad' never to be created: input was executed as a command" >&2
+    exit 1
+  fi
+done
+# shellcheck disable=SC2016
+rm -f '$(touch pwned-file).txt'
+
+# The read-only contract holds on the review and synthesis paths, not only on
+# ask. This is where a regression would be least visible and most expensive.
+: > "$LOG"
+model-peer review --models claude,codex,gemini --synthesizer claude 'contract' >/dev/null 2>&1
+# Claude reviews and synthesizes: both in plan mode, both read-only tools.
+[[ "$(grep -c '<--permission-mode> <plan>' "$LOG")" -eq 2 ]]
+[[ "$(grep -c '<--tools> <Read,Glob,Grep>' "$LOG")" -eq 2 ]]
+grep -Fq '<--sandbox> <read-only>' "$LOG"
+grep -Fq '<--ephemeral>' "$LOG"
+grep -Fq '<--approval-mode> <plan>' "$LOG"
+grep -Fq '<-e> <none>' "$LOG"
+# Gemini's deny policy is generated for a reviewer too, not just for ask.
+awk '/GEMINI POLICY BEGIN/,/GEMINI POLICY END/' "$LOG" | grep -Fq 'run_shell_command'
+awk '/GEMINI POLICY BEGIN/,/GEMINI POLICY END/' "$LOG" | grep -Fq 'exit_plan_mode'
+awk '/GEMINI POLICY BEGIN/,/GEMINI POLICY END/' "$LOG" | grep -Fq 'write_file'
+# Stdin is closed for all four consultations; a live stdin can hang a nested CLI.
+[[ "$(grep -c 'STDIN=EOF' "$LOG")" -eq 4 ]]
+# No reviewer and no synthesizer is ever granted execution, and every one of them
+# is told it is a leaf. Prompt and capability must never disagree.
+[[ "$(grep -c 'Remaining peer-chain depth: 0' "$LOG")" -eq 4 ]]
+[[ "$(grep -c 'Do not invoke Claude Code' "$LOG")" -eq 4 ]]
+for forbidden in 'allowedTools' '<Bash' 'model-peer _delegate <model>'; do
+  if grep -Fq "$forbidden" "$LOG"; then
+    echo "expected no '$forbidden' anywhere on the review path" >&2; exit 1
+  fi
+done
+
+# Depth cannot be smuggled into a review through the environment either: the
+# reviewers are leaves by construction, not by argument parsing.
+: > "$LOG"
+MODEL_PEER_MAX_DEPTH=10 model-peer review --models claude,codex --synthesizer claude \
+  'env depth' >/dev/null 2>&1
+if grep -Fq 'You may consult one further peer' "$LOG"; then
+  echo 'expected MODEL_PEER_MAX_DEPTH not to grant reviewers delegation' >&2; exit 1
+fi
+[[ "$(grep -c 'Remaining peer-chain depth: 0' "$LOG")" -eq 3 ]]
 
 cd "$ROOT"
 
@@ -625,6 +1144,12 @@ chmod +x "$TMP/bin/claude"
 model-peer doctor > "$TMP/doctor.txt" 2>&1
 grep -Fq '9.9.9' "$TMP/doctor.txt"
 
+# The depth ceiling is rarely what stops a chain: a model may not appear twice, so
+# the real cap is how many distinct models are installed. doctor reports both, so
+# nobody has to work that out from the guard source.
+grep -Fq 'ceiling 10' "$TMP/doctor.txt"
+grep -Fq 'Longest usable chain:   3' "$TMP/doctor.txt"
+
 # A peer that reads but does not write is verified clean.
 model-peer doctor --probe --models claude --timeout 20 > "$TMP/probe-ok.txt" 2>&1
 grep -Fq 'quoted the probe token' "$TMP/probe-ok.txt"
@@ -676,42 +1201,87 @@ cp "$TMP/bin/claude.real" "$TMP/bin/claude"
 # The probe leaves nothing behind.
 [[ -z "$(ls -d "${TMPDIR:-/tmp}"/model-peer-probe.* 2>/dev/null)" ]]
 
-# Gemini records its chosen auth method in settings.json. The state that matters
-# is "configured for an API key with no key present": headless, Gemini blocks on a
-# prompt stdin cannot answer, so a review hangs instead of failing. doctor used to
-# call that "cached OAuth is verified on first request", which is exactly wrong.
+# Gemini records its chosen auth method in settings.json, and the state worth
+# warning about is "configured for an API key with no key present": headless,
+# Gemini blocks on a prompt stdin cannot answer, so a review hangs instead of
+# failing. But settings.json plus two environment variables is not the whole
+# credential story — Gemini loads a .env of its own and can hold a sign-in Model
+# Peer cannot see — so this is reported as a suspicion, never as a verdict.
 AUTH_HOME="$TMP/auth-home"
 mkdir -p "$AUTH_HOME/.gemini"
 
+# api-key with no key anywhere Model Peer can see: worth saying, but not a verdict.
+# Gemini also accepts a key from its own credential store, which no shell can read.
 printf '{"security":{"auth":{"selectedType":"gemini-api-key"}}}\n' \
   > "$AUTH_HOME/.gemini/settings.json"
 HOME="$AUTH_HOME" model-peer doctor > "$TMP/auth1.txt" 2>&1
-grep -Fq 'BROKEN' "$TMP/auth1.txt"
-grep -Fq 'will hang' "$TMP/auth1.txt"
+grep -Fq 'no GEMINI_API_KEY is visible' "$TMP/auth1.txt"
+grep -Fq 'hangs rather than fails' "$TMP/auth1.txt"
+# The caveat must travel with the warning, or it reads as a verdict again.
+grep -Fq 'credential store' "$TMP/auth1.txt"
+grep -Fq 'necessarily a problem' "$TMP/auth1.txt"
+grep -Fq 'doctor --probe' "$TMP/auth1.txt"
 
 HOME="$AUTH_HOME" GEMINI_API_KEY=present model-peer doctor > "$TMP/auth2.txt" 2>&1
-grep -Fq 'API key (configured, key present)' "$TMP/auth2.txt"
-if grep -Fq 'BROKEN' "$TMP/auth2.txt"; then
-  echo 'expected a present API key to satisfy the api-key auth type' >&2; exit 1
-fi
+grep -Fq 'API key (GEMINI_API_KEY set)' "$TMP/auth2.txt"
 
-# OAuth selected but nobody signed in is equally broken.
+# Gemini loads a .env before validating, so a key set there counts. Missing this is
+# what made Model Peer report a working setup as broken.
+printf 'GEMINI_API_KEY=from-dotenv\n' > "$AUTH_HOME/.gemini/.env"
+HOME="$AUTH_HOME" model-peer doctor > "$TMP/auth2b.txt" 2>&1
+grep -Fq 'set in a .env that Gemini loads' "$TMP/auth2b.txt"
+rm -f "$AUTH_HOME/.gemini/.env"
+
+# OAuth: validateAuthMethod returns valid unconditionally and never reads
+# google_accounts.json, so neither does Model Peer. Both states report the same.
 printf '{"security":{"auth":{"selectedType":"oauth-personal"}}}\n' \
   > "$AUTH_HOME/.gemini/settings.json"
 printf '{"active": null, "old": []}\n' > "$AUTH_HOME/.gemini/google_accounts.json"
 HOME="$AUTH_HOME" model-peer doctor > "$TMP/auth3.txt" 2>&1
-grep -Fq 'no account is signed in' "$TMP/auth3.txt"
+grep -Fq 'OAuth — Gemini accepts this without checking a local credential' "$TMP/auth3.txt"
+if grep -Fq 'signed in' "$TMP/auth3.txt"; then
+  echo 'expected doctor not to invent a sign-in check Gemini does not perform' >&2; exit 1
+fi
 printf '{"active": "me@example.com", "old": []}\n' > "$AUTH_HOME/.gemini/google_accounts.json"
 HOME="$AUTH_HOME" model-peer doctor > "$TMP/auth4.txt" 2>&1
-grep -Fq 'OAuth (signed in)' "$TMP/auth4.txt"
+grep -Fq 'OAuth — Gemini accepts this without checking a local credential' "$TMP/auth4.txt"
+
+# Vertex AI wants GOOGLE_CLOUD_PROJECT with GOOGLE_CLOUD_LOCATION, or GOOGLE_API_KEY
+# for express mode. Model Peer used to check GOOGLE_APPLICATION_CREDENTIALS, which
+# Gemini does not consult for this method at all.
+printf '{"security":{"auth":{"selectedType":"vertex-ai"}}}\n' \
+  > "$AUTH_HOME/.gemini/settings.json"
+HOME="$AUTH_HOME" model-peer doctor > "$TMP/auth6.txt" 2>&1
+grep -Fq 'neither GOOGLE_CLOUD_PROJECT with' "$TMP/auth6.txt"
+HOME="$AUTH_HOME" GOOGLE_CLOUD_PROJECT=p GOOGLE_CLOUD_LOCATION=us-central1 \
+  model-peer doctor > "$TMP/auth7.txt" 2>&1
+grep -Fq 'Vertex AI (project and location set)' "$TMP/auth7.txt"
+HOME="$AUTH_HOME" GOOGLE_API_KEY=k model-peer doctor > "$TMP/auth8.txt" 2>&1
+grep -Fq 'express mode' "$TMP/auth8.txt"
+# The project alone is not enough; Gemini requires the location with it.
+HOME="$AUTH_HOME" GOOGLE_CLOUD_PROJECT=p model-peer doctor > "$TMP/auth9.txt" 2>&1
+grep -Fq 'neither GOOGLE_CLOUD_PROJECT with' "$TMP/auth9.txt"
+
+# A method Gemini does not recognize is rejected by Gemini outright, so this one
+# Model Peer can state plainly.
+printf '{"security":{"auth":{"selectedType":"telepathy"}}}\n' \
+  > "$AUTH_HOME/.gemini/settings.json"
+HOME="$AUTH_HOME" model-peer doctor > "$TMP/auth10.txt" 2>&1
+grep -Fq 'is not a method Gemini recognizes' "$TMP/auth10.txt"
 
 # No settings file at all is a fresh install, not a fault.
 rm -f "$AUTH_HOME/.gemini/settings.json" "$AUTH_HOME/.gemini/google_accounts.json"
 HOME="$AUTH_HOME" model-peer doctor > "$TMP/auth5.txt" 2>&1
-grep -Fq 'no method chosen yet' "$TMP/auth5.txt"
-if grep -Fq 'BROKEN' "$TMP/auth5.txt"; then
-  echo 'expected a fresh install not to be reported as broken' >&2; exit 1
-fi
+grep -Fq 'no method recorded yet' "$TMP/auth5.txt"
+
+# doctor must never call a setup broken from configuration inference. It did once,
+# on a setup that worked, and a diagnostic that cries wolf gets ignored when it
+# counts. Only --probe, which actually consults the model, may reach a verdict.
+for f in auth1 auth2 auth2b auth3 auth4 auth5 auth6 auth7 auth8 auth9 auth10; do
+  if grep -Eq 'BROKEN|is broken' "$TMP/$f.txt"; then
+    echo "expected doctor never to assert broken from config alone ($f)" >&2; exit 1
+  fi
+done
 
 # doctor still rejects stray arguments.
 if model-peer doctor --bogus >/dev/null 2>&1; then

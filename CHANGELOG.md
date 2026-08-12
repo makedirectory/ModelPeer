@@ -2,6 +2,105 @@
 
 All notable changes to Model Peer are documented here.
 
+## 0.6.0 - 2026-08-11
+
+### Added
+
+- **`doctor` reports the longest chain that is actually reachable**, alongside the
+  configured limit. `--depth` accepts up to 10, but a model may never appear twice
+  in one chain, so the real cap is how many distinct models you have installed —
+  three. Depth above that has never done anything, and nothing said so:
+
+  ```text
+  Peer-chain depth limit: 1 (ceiling 10)
+  Longest usable chain:   3 (a model may not appear twice, and 3 installed)
+  ```
+
+- The installer now says how to finish setup. Installing Model Peer globally gives
+  *you* a command; it does not give the coding agent in your repository a habit.
+  That takes `model-peer init`, once per project, and nobody runs a command they
+  were never told about.
+
+### Changed
+
+- **`model-peer review` now runs independent reviewers concurrently** rather than
+  serially. Reviewer wall-clock time is therefore approximately the slowest
+  requested reviewer rather than the sum of all reviewer runtimes.
+
+  ```text
+  serial:    Claude + Codex + Gemini + synthesis
+  parallel:  max(Claude, Codex, Gemini) + synthesis
+  ```
+
+  The practical benefit is larger than the arithmetic suggests: a vendor that hangs
+  for its full timeout no longer delays the *start* of every reviewer behind it.
+  Each reviewer's timeout window now begins when the panel does.
+
+  Parallel review reduces elapsed time, not provider usage. Every requested
+  reviewer is still invoked exactly once.
+
+- **Reviewer output is buffered per reviewer and replayed in panel order.**
+  Concurrent model responses cannot interleave on stdout, and the replay follows
+  the order the models were requested rather than the order they finished, so
+  `model-peer review > review.txt` is reproducible.
+
+- Existing timeout, partial-panel, `--strict`, empty-output, and synthesis
+  semantics are unchanged. Synthesis still begins only after every requested
+  reviewer has finished, failed, or timed out, and is still refused below two
+  surviving reviewers.
+
+### Fixed
+
+- **`doctor` called a working Gemini setup BROKEN.** 0.5.1 taught it to read the
+  sign-in method recorded in `~/.gemini/settings.json` and check the matching
+  credential. The reading was right; the checks were wrong in every branch, so it
+  replaced a false "fine" with a false "broken" — which is worse, because it sends
+  people to fix what is not wrong and teaches them to ignore the one diagnostic
+  that matters.
+
+  The checks now mirror Gemini CLI's own `validateAuthMethod`, read out of the
+  shipping bundle rather than inferred:
+
+  | `selectedType` | Model Peer used to require | Gemini actually accepts |
+  |---|---|---|
+  | `oauth-personal` | an active account in `google_accounts.json` | anything — it performs no local check, and never reads that file |
+  | `gemini-api-key` | `GEMINI_API_KEY` or `GOOGLE_API_KEY` in the environment | `GEMINI_API_KEY` from the environment **or a `.env` it loads itself**, **or a key in its credential store** |
+  | `vertex-ai` | `GOOGLE_APPLICATION_CREDENTIALS` or `GOOGLE_CLOUD_PROJECT` | `GOOGLE_CLOUD_PROJECT` **and** `GOOGLE_CLOUD_LOCATION`, or `GOOGLE_API_KEY` |
+
+  Model Peer now also searches for a `.env` the way Gemini does — from the current
+  directory upward, preferring `<dir>/.gemini/.env`, then `~/.gemini/.env` and
+  `~/.env` — checking only whether the variable is assigned, never reading its
+  value.
+
+  One source stays invisible: Gemini can hold an API key in its own credential
+  store, which no shell can read. So `doctor` no longer states a verdict it cannot
+  support. It reports what it can see, says plainly what it cannot, and points at
+  `doctor --probe`, which settles the question by actually consulting the model.
+
+- **`SIGINT`/`SIGTERM` ran the cleanup and then carried on.** The handler removed
+  the review temp directory and returned, and the shell continued into code whose
+  temp directory no longer existed — so an interrupted review kept consulting
+  models and exited on whatever the interrupted statement happened to return.
+  Both signals now stop the panel and re-raise, giving the conventional `130`/`143`.
+
+  Interrupting a parallel review also stops every reviewer worker and the vendor
+  process tree beneath each one, so no model call is left running in the
+  background against your account.
+
+- **A model listed twice in `--models` ran twice and was reported as two
+  reviewers.** `--models gemini,gemini,gemini` invoked Gemini three times — three
+  times the usage — while all three wrote the same `gemini.txt`. Serially the last
+  one overwrote the others; concurrently they raced. The synthesizer then received
+  a single review and was told every reviewer in the panel completed, which is the
+  exact misreport the panel exists to prevent.
+
+  Duplicates are now a usage error (exit `2`), applying the rule the chain guard
+  already enforced within a chain: a model may not appear twice.
+
+  ```text
+  model-peer: review model 'gemini' is listed more than once; a panel needs distinct models.
+  ```
+
 ## 0.5.1 - 2026-08-11
 
 ### Fixed

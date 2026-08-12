@@ -12,13 +12,13 @@ CLIs you choose to use.
 ## One-line install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/makedirectory/ModelPeer/v0.5.1/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/makedirectory/ModelPeer/v0.6.0/install.sh | bash
 ```
 
 Interactive setup, which can offer to install missing CLIs:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/makedirectory/ModelPeer/v0.5.1/install.sh | bash -s -- --setup
+curl -fsSL https://raw.githubusercontent.com/makedirectory/ModelPeer/v0.6.0/install.sh | bash -s -- --setup
 ```
 
 As with any remote shell installer, inspect it before piping it into a shell.
@@ -100,8 +100,13 @@ model-peer doctor
 
 `doctor` reports which CLIs are installed, whether authentication looks available,
 the safety defaults in force, the per-provider nested-consultation matrix, the
-effective peer-chain depth limit, and which Model Peer skills the project you are
-standing in has installed.
+effective peer-chain depth limit and the longest chain actually reachable, and
+which Model Peer skills the project you are standing in has installed.
+
+It reads configuration only, so it costs nothing and can be wrong about
+credentials a CLI keeps somewhere it cannot see. To settle a question rather than
+infer an answer, `model-peer doctor --probe` runs one real consultation per CLI —
+see [the reference](reference#doctor---probe).
 
 ## Set up a project
 

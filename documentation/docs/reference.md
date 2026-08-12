@@ -59,10 +59,20 @@ consults another model. Three reviewers that can consult each other are not thre
 independent observations, so this is a property of the command rather than a
 setting. Passing `--depth` exits `2` with a pointer to `ask`.
 
+`review` fans the working tree out to all requested reviewers **concurrently**.
+Each reviewer has its own timeout, running from the moment the panel starts. Model
+Peer waits for every requested reviewer to finish, fail, or time out before
+applying the partial-panel or `--strict` rules and starting synthesis, so a
+reviewer still running never has its evidence skipped. Synthesis itself is serial.
+
 Each reviewer is bounded independently. One that times out, exits non-zero, or
 returns no output at all is dropped from the panel and named in the report;
 synthesis proceeds while at least two reviewers produced a real review, and is
 refused below that. See [Troubleshooting](troubleshooting).
+
+Reviewer output is buffered per reviewer and replayed on stdout in the order the
+models were requested, never the order they finished, so concurrent responses
+cannot interleave and a redirected run is reproducible.
 
 Review context covers tracked changes **and** untracked, non-ignored files, so newly
 added code is reviewed rather than merely listed.
@@ -198,7 +208,7 @@ most likely to have moved.
 |---|---|---|
 | `MODEL_PEER_REVIEWERS` | all installed | Default review panel, e.g. `claude,codex,gemini` |
 | `MODEL_PEER_SYNTHESIZER` | first available | Default synthesis model |
-| `MODEL_PEER_MAX_DEPTH` | `1` | Default peer-chain depth limit, 1–10 |
+| `MODEL_PEER_MAX_DEPTH` | `1` | Default peer-chain depth limit, 1–10. Inside a chain it is the inherited cap: a peer may lower it, never raise it |
 | `MODEL_PEER_TIMEOUT` | `600` | Default per-consultation timeout in seconds; `0` disables |
 | `MODEL_PEER_MAX_DIFF_BYTES` | `500000` | Patch bytes embedded in review prompts |
 | `MODEL_PEER_BIN_DIR` | `~/.local/bin` | Install directory override |

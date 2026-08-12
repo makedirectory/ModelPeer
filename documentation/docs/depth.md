@@ -24,6 +24,20 @@ depth 3     you -> claude -> codex -> gemini
 Valid values are `1` to `10`. Set a different default with `MODEL_PEER_MAX_DEPTH`.
 The limit propagates down the chain, so a peer cannot raise its own ceiling.
 
+That range is wider than it looks useful. Because a model may never appear twice in
+one chain, the longest chain possible is the number of distinct models you have
+installed — three today — and `--depth 4` and above do nothing at all.
+`model-peer doctor` reports both numbers so you do not have to work that out:
+
+```text
+Peer-chain depth limit: 1 (ceiling 10)
+Longest usable chain:   3 (a model may not appear twice, and 3 installed)
+```
+
+The `10` is a sanity bound on the argument, not a safety property. What makes depth
+safe is the no-repeat rule and the delegation matrix below, and neither depends on
+that number.
+
 :::tip Depth is chain length, not hop count
 `--depth 1` means one model participates and answers alone. It is not "one extra
 hop".

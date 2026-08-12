@@ -34,7 +34,9 @@ only the parent leaves those helpers holding the pipe open and the hang survives
 kill. `ask` exits `124` in this case, matching `timeout(1)`.
 
 A reviewer that times out is dropped from the panel rather than taking the whole run
-with it — see [Partial panels](#partial-panels) below.
+with it — see [Partial panels](#partial-panels) below. Because reviewers run
+concurrently, each timeout window starts when the panel does, so one stalled vendor
+no longer delays the models behind it.
 
 If a specific CLI hangs consistently, check it outside Model Peer:
 
@@ -49,6 +51,37 @@ authentication or network — and no Model Peer setting will fix it.
 per CLI and reports which ones responded, so a hang shows up as
 `no answer within Ns — nothing verified` against that CLI alone rather than as a
 mysterious slow review.
+
+## A review looks busy all at once
+
+**Signature:** several models appear to start at the same moment, and stderr lines
+from different providers arrive interleaved and in a different order each run.
+
+That is expected. Reviewers are independent, so they run concurrently: all of them
+start before Model Peer waits for any of them, and the reviewer phase costs roughly
+the slowest model rather than the sum of them.
+
+```text
+Starting Claude independent review...
+Starting Codex independent review...
+Starting Gemini independent review...
+model-peer: Codex still working (30s of 600s).
+```
+
+Model output itself is buffered per reviewer and replayed after the panel finishes,
+in the order the models were requested. stdout therefore never contains interleaved
+model responses and does not depend on which reviewer happened to finish first:
+
+```bash
+model-peer review > review.txt      # reproducible, whatever the finishing order
+```
+
+Interrupting a parallel review with Ctrl-C stops every reviewer and the vendor
+process tree beneath each one, so no model call is left running in the background.
+
+Parallel review reduces elapsed time, not provider usage — every requested reviewer
+is still invoked exactly once. Aborting a run early may mean more concurrent work
+was already consumed than under serial execution.
 
 ## Partial panels
 
@@ -79,7 +112,7 @@ model-peer review --strict
 reports `no answer within Ns — nothing verified`, while `gemini` used
 interactively works fine.
 
-Almost always an auth mismatch. Gemini records one chosen sign-in method in
+Usually an auth mismatch. Gemini records one chosen sign-in method in
 `~/.gemini/settings.json`; if that method's credential is missing, a **headless**
 run does not fail — it blocks on a prompt that stdin cannot answer. Interactively
 it works because Gemini can ask you.
@@ -89,17 +122,39 @@ model-peer doctor
 ```
 
 ```text
-Gemini authentication: BROKEN — configured for an API key, but neither GEMINI_API_KEY nor
-                       GOOGLE_API_KEY is set. Headless calls will hang rather than
-                       fail, because Gemini waits on a prompt that stdin cannot
-                       answer.
+Gemini authentication: API key selected, and no GEMINI_API_KEY is visible in the environment
+                       or in a .env Gemini would load. It may still hold one in its
+                       credential store, which no shell can read — so this is not
+                       necessarily a problem...
 ```
+
+`doctor` deliberately stops short of calling this broken, because it cannot see
+everything Gemini can. Mirroring the CLI's own `validateAuthMethod`, these are the
+credentials each recorded method actually accepts:
+
+| `selectedType` | What Gemini accepts |
+|---|---|
+| `oauth-personal`, `compute-default-credentials` | Anything — it performs no local credential check |
+| `gemini-api-key` | `GEMINI_API_KEY`, from the environment **or** a `.env` it loads, **or** a key in its own credential store |
+| `vertex-ai` | `GOOGLE_CLOUD_PROJECT` **and** `GOOGLE_CLOUD_LOCATION`, **or** `GOOGLE_API_KEY` for express mode |
+
+Gemini searches for that `.env` from the current directory upward, preferring
+`<dir>/.gemini/.env` over `<dir>/.env`, then falling back to `~/.gemini/.env` and
+`~/.env`. A key set in any of them is invisible to your shell but perfectly visible
+to Gemini — which is why a setup can work while `doctor` cannot confirm it.
 
 Fix it by supplying the credential the recorded method expects:
 
 ```bash
 export GEMINI_API_KEY=...   # for selectedType: gemini-api-key
 gemini                      # or re-run interactively and pick another method
+```
+
+To settle it rather than guess, run the probe — it is the only check that actually
+consults the model:
+
+```bash
+model-peer doctor --probe --models gemini
 ```
 
 The tell that this is auth and not a Model Peer problem: with a *deliberately
