@@ -139,6 +139,12 @@ Peers are launched with the most conservative non-interactive configuration each
 vendor supports: Plan mode or a read-only sandbox, no file-editing tools, no general
 shell, and stdin closed. Model Peer stores no credentials.
 
+Where a vendor reads trust settings from the environment, Model Peer supplies them
+itself rather than inheriting yours. Gemini's `GEMINI_CLI_TRUST_WORKSPACE` is cleared
+before launch: it would otherwise enable MCP servers declared by the workspace, which
+Gemini starts as local subprocesses during tool discovery — before any tool policy
+applies. A reviewed repository does not get to configure its own reviewer.
+
 Consultation chains are bounded by `--depth` (default 1, ceiling 10) on `ask`, and
 a model is never consulted twice in one chain. Depth is a **limit, not a
 permission** — raising it increases how many models can participate, never what a
