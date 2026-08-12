@@ -2,6 +2,33 @@
 
 All notable changes to Model Peer are documented here.
 
+## 0.6.1 - 2026-08-12
+
+### Fixed
+
+- **Gemini no longer inherits `GEMINI_CLI_TRUST_WORKSPACE`.** Gemini documents
+  `GEMINI_CLI_TRUST_WORKSPACE=true` as the headless equivalent of `--skip-trust`.
+  Inside Gemini the two are not equivalent: the environment variable additionally
+  enables MCP servers declared in the workspace's own `.gemini/settings.json`, and
+  Gemini launches those as local subprocesses during tool discovery — before any
+  policy decision, and without a model turn.
+
+  Plan mode, the generated deny policy, and `-e none` all govern tool *calls*. None
+  of them govern server *startup*. So under `model-peer review`, a repository being
+  reviewed could specify a command that ran on the reviewer's machine.
+
+  `--skip-trust` on its own never did this; only the inherited variable did, and
+  `run_gemini` passed the environment through unchanged. It is now cleared, making
+  `--skip-trust` the single trust mechanism Model Peer relies on rather than one of
+  two with divergent behaviour. Verified against Gemini CLI 0.46.0, with and without
+  the fix, using the flags Model Peer actually passes.
+
+  If you run Model Peer against repositories you do not control, this is worth
+  taking. If that variable is not set in your environment, you were never exposed.
+
+  The smoke tests now assert that the variable does not reach the CLI, so the
+  contract is checked rather than assumed.
+
 ## 0.6.0 - 2026-08-11
 
 ### Added
