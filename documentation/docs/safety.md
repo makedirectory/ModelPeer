@@ -57,7 +57,8 @@ suite asserts this.
 ## Gemini
 
 ```bash
-gemini --approval-mode plan --policy <generated.toml> -e none --skip-trust \
+env -u GEMINI_CLI_TRUST_WORKSPACE \
+  gemini --approval-mode plan --policy <generated.toml> -e none --skip-trust \
   -p "<prompt>" </dev/null
 ```
 
@@ -101,11 +102,32 @@ trust. Headlessly that refusal is **silent**: it exits `0` having produced nothi
 which a review panel would otherwise read as "this reviewer found no issues".
 
 Model Peer trusts the workspace for the session so a consultation is not a silent
-no-op. This does not widen the boundary, because none of the guarantees above depend
-on the trust gate: Plan mode, the unconditional deny policy, and `-e none` are all
-passed explicitly on the command line and apply either way. The gate's job is to stop
-an untrusted directory from enabling tool execution and project configuration; the
-deny policy already denies the tools that matter, at priority 999.
+no-op. Plan mode, the unconditional deny policy, and `-e none` are passed explicitly
+on the command line and apply either way, so the read-only tool contract does not
+depend on the trust gate.
+
+### Why the trust variable is cleared
+
+`GEMINI_CLI_TRUST_WORKSPACE=true` is documented as the headless equivalent of
+`--skip-trust`. It is not equivalent. The flag satisfies the gate; the variable also
+enables MCP servers declared in the workspace's own `.gemini/settings.json`, and
+Gemini starts those as local subprocesses during tool discovery.
+
+That happens **before any policy decision and without a model turn**, which is the
+part worth internalising: the deny policy governs tool *calls*, not server *startup*.
+No rule at priority 999 reaches it, and neither does Plan mode.
+
+Under `model-peer review` the consequence is direct — a repository being reviewed
+could specify a command that runs on your machine, in the one workflow whose whole
+premise is reading code you do not trust. Model Peer therefore clears the variable
+rather than inheriting it, so `--skip-trust` is the single trust mechanism in play
+instead of one of two that disagree.
+
+If the variable is not set in your environment, this never applied to you. It is
+cleared unconditionally so that stays true regardless of how Model Peer is invoked.
+
+This was found and fixed in v0.6.1, verified against Gemini CLI 0.46.0 with and
+without the fix. The smoke suite asserts the variable does not reach the CLI.
 
 The flag is feature-detected from `gemini --help`, so builds that predate it are
 invoked exactly as before.
