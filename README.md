@@ -151,7 +151,9 @@ permission** — raising it increases how many models can participate, never wha
 model can do to your system. A delegating peer is granted exactly one command,
 `model-peer _delegate`, which cannot write files or raise its own ceiling.
 
-Every consultation is bounded by `--timeout`, including the synthesis step.
+Every consultation is bounded by `--timeout`, including the synthesis step and any
+nested consultation a peer initiates — the resolved value is handed down the chain
+rather than re-defaulted at each hop.
 
 Reviews cover untracked files as well as tracked changes, so new code is reviewed
 rather than merely listed.
