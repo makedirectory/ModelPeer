@@ -60,6 +60,10 @@ available reviewer receives the same Git status and patch independently, without
 seeing the other models' conclusions. Only after all reviews finish does a
 synthesizer reconcile the findings.
 
+The diagram below is literal: reviewers have nothing to wait on, so they run at the
+same time, and a review costs about as long as the slowest model rather than the
+sum of them.
+
 ```text
               +--> Claude --+
               |             |

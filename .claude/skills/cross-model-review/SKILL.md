@@ -20,18 +20,28 @@ Only then does a synthesizer reconcile the findings. Reviewers are always leaves
 none of them consults another model, which is what makes agreement between them
 real signal rather than an echo.
 
+Because they are independent, they also run at the same time.
+
 Run it before opening a pull request, and again after any change to
 security-sensitive code.
 
 ```bash
 model-peer review "Focus on authorization and tenant isolation"
-model-peer review --models codex,gemini     # exclude yourself
-model-peer review --timeout 300                       # bound each reviewer
+model-peer review --models codex,gemini   # exclude yourself
+model-peer review --timeout 300   # bound each reviewer, not the whole panel
 ```
 
-It takes minutes and prints progress on stderr. Let it finish. A reviewer that
-times out, fails, or returns nothing is dropped and named; synthesis needs two
-survivors and says so when the panel was incomplete.
+It takes minutes. Let it finish, and do not be alarmed by how it looks while it
+runs:
+
+- Progress from several models arrives on stderr at once, interleaved, in a
+  different order each run. That is normal.
+- **Nothing appears on stdout until every reviewer has finished.** The reviews are
+  then printed together, in the order the models were requested. A long silence is
+  the panel working, not a hang.
+
+A reviewer that times out, fails, or returns nothing is dropped and named;
+synthesis needs two survivors and says so when the panel was incomplete.
 
 ## What to do with the report
 

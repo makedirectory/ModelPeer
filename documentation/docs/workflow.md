@@ -140,6 +140,11 @@ Because reviewers cannot anchor on each other, agreement between them is real
 signal — and the synthesizer is explicitly told not to accept a claim merely
 because several models repeated it.
 
+Reviewers run at the same time, so the panel looks busy all at once: progress from
+several models interleaves on stderr, and nothing reaches stdout until every
+reviewer has finished. A long quiet stretch is the panel working, not a hang — see
+[Troubleshooting](troubleshooting#a-review-looks-busy-all-at-once).
+
 ### 3. From inside Claude Code
 
 `init` also installs a slash command, so you never have to leave the session:

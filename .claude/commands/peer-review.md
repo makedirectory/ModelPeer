@@ -10,8 +10,10 @@ Run an independent cross-model review of the current working tree with
 `model-peer review`, passing `$ARGUMENTS` as the focus when it is non-empty.
 
 Every installed model reviews the same diff without seeing the others'
-conclusions, then a synthesizer reconciles them. This takes a few minutes and
-prints progress on stderr — let it finish.
+conclusions, then a synthesizer reconciles them. Reviewers run at the same time,
+so this takes a few minutes and looks busy: stderr carries interleaved progress
+from several models, and nothing reaches stdout until the whole panel has
+finished. Let it finish.
 
 Then:
 
