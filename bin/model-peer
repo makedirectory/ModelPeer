@@ -580,8 +580,17 @@ POLICY
     trust_args=(--skip-trust)
   fi
 
+  # GEMINI_CLI_TRUST_WORKSPACE=true is a documented headless equivalent of
+  # --skip-trust, but the two are not equivalent inside Gemini: the environment
+  # variable also enables MCP servers declared in the workspace's own
+  # .gemini/settings.json, and those are launched as local subprocesses during tool
+  # discovery — before any policy decision, and without a model turn. Under `review`
+  # that hands the repository being reviewed command execution on the reviewer's
+  # machine. --skip-trust alone does not do this, so clear the variable rather than
+  # inherit it and leave the read-only contract depending on the developer's
+  # environment. Verified against Gemini CLI 0.46.0.
   if MODEL_PEER_STACK="$stack" MODEL_PEER_MAX_DEPTH="$max_depth" \
-      gemini \
+      env -u GEMINI_CLI_TRUST_WORKSPACE gemini \
         --approval-mode plan \
         --policy "$policy" \
         -e none \

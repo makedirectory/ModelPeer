@@ -118,6 +118,14 @@ if [[ "$*" == *--help* ]]; then
   exit 0
 fi
 if [[ "${1:-}" == --version ]]; then printf '9.9.9\n'; exit 0; fi
+# Recorded so the workspace-trust contract can be asserted: this variable enables
+# workspace-declared MCP servers, which Gemini spawns as local subprocesses during
+# tool discovery. It must never reach the CLI.
+if [[ -n "${GEMINI_CLI_TRUST_WORKSPACE+set}" ]]; then
+  printf 'GEMINI TRUST_ENV=INHERITED\n' >> "$MODEL_PEER_TEST_LOG"
+else
+  printf 'GEMINI TRUST_ENV=CLEARED\n' >> "$MODEL_PEER_TEST_LOG"
+fi
 mp_stub_log gemini "$@"
 mp_stub_barrier gemini
 printf 'gemini review output\n'
@@ -367,6 +375,21 @@ fi
 # flag in --help, which is how model-peer feature-detects it.
 : > "$LOG"
 model-peer ask gemini 'trust' >/dev/null
+grep -Fq '<--skip-trust>' "$LOG"
+
+# --skip-trust must be the only trust mechanism that reaches Gemini.
+# GEMINI_CLI_TRUST_WORKSPACE=true is documented as its headless equivalent, but it
+# additionally enables MCP servers declared by the workspace, which Gemini launches
+# as local subprocesses during tool discovery — before any policy decision and
+# without a model turn. Inheriting it would let a repository under review execute a
+# command on the reviewer's machine, so model-peer clears it.
+: > "$LOG"
+GEMINI_CLI_TRUST_WORKSPACE=true model-peer ask gemini 'inherited trust' >/dev/null
+grep -Fq 'TRUST_ENV=CLEARED' "$LOG"
+if grep -Fq 'TRUST_ENV=INHERITED' "$LOG"; then
+  echo 'expected GEMINI_CLI_TRUST_WORKSPACE to be cleared before invoking gemini' >&2; exit 1
+fi
+# The peer still runs: clearing the variable must not reintroduce the trust gate.
 grep -Fq '<--skip-trust>' "$LOG"
 
 # Timeouts. A hung peer must be bounded, must not leave orphans holding the pipe
