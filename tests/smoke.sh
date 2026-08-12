@@ -91,6 +91,7 @@ set -euo pipefail
 . "$MP_TEST_LIB"
 if [[ "${1:-}" == auth && "${2:-}" == status ]]; then exit 0; fi
 if [[ "${1:-}" == --version ]]; then printf '9.9.9\n'; exit 0; fi
+printf 'CLAUDE TIMEOUT_ENV=%s\n' "${MODEL_PEER_TIMEOUT-unset}" >> "$MODEL_PEER_TEST_LOG"
 mp_stub_log claude "$@"
 mp_stub_barrier claude
 printf 'claude review output\n'
@@ -391,6 +392,25 @@ if grep -Fq 'TRUST_ENV=INHERITED' "$LOG"; then
 fi
 # The peer still runs: clearing the variable must not reintroduce the trust gate.
 grep -Fq '<--skip-trust>' "$LOG"
+
+# --timeout must survive the hop. A nested peer re-resolves the timeout from the
+# environment, so a value that is not handed down silently becomes DEFAULT_TIMEOUT:
+# `--timeout 42 --depth 2` would give the nested peer 600s and the flag would mean
+# nothing below the top level.
+: > "$LOG"
+model-peer ask claude --depth 2 --timeout 42 'inherits timeout' >/dev/null
+grep -Fq 'CLAUDE TIMEOUT_ENV=42' "$LOG" \
+  || { echo 'expected --timeout to reach the peer as MODEL_PEER_TIMEOUT' >&2; exit 1; }
+# 0 disables the limit, and that must be inherited as 0 rather than re-defaulted.
+: > "$LOG"
+model-peer ask claude --depth 2 --timeout 0 'inherits disabled timeout' >/dev/null
+grep -Fq 'CLAUDE TIMEOUT_ENV=0' "$LOG" \
+  || { echo 'expected --timeout 0 to be inherited as 0, not re-defaulted' >&2; exit 1; }
+# The environment default reaches the peer too.
+: > "$LOG"
+MODEL_PEER_TIMEOUT=77 model-peer ask claude --depth 2 'env timeout' >/dev/null
+grep -Fq 'CLAUDE TIMEOUT_ENV=77' "$LOG" \
+  || { echo 'expected MODEL_PEER_TIMEOUT to reach the peer' >&2; exit 1; }
 
 # Timeouts. A hung peer must be bounded, must not leave orphans holding the pipe
 # open, and must exit 124.

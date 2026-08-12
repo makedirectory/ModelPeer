@@ -395,6 +395,16 @@ HEARTBEAT_SECONDS=30
 
 # Resolve the per-consultation timeout from --timeout, then MODEL_PEER_TIMEOUT,
 # then the default. 0 disables it.
+#
+# The resolved value is handed to the peer in MODEL_PEER_TIMEOUT so a nested
+# consultation inherits what the user asked for. Without that, a peer's own
+# `_delegate` call re-resolves from an unset variable and silently falls back to
+# DEFAULT_TIMEOUT — so `--timeout 60 --depth 2` gave the nested peer 600s, and the
+# flag meant nothing below the top level.
+#
+# This bounds each hop, not the whole chain: N consultations can still take N x
+# timeout in total. Making --timeout a deadline spanning the chain requires the
+# broker, which owns the whole loop; see the roadmap.
 resolve_timeout() {
   local requested="$1"
   local secs="${requested:-${MODEL_PEER_TIMEOUT:-$DEFAULT_TIMEOUT}}"
@@ -533,7 +543,7 @@ PROMPT
 }
 
 run_claude() {
-  local prompt="$1" stack="$2" remaining="$3" max_depth="$4" delegation="$5"
+  local prompt="$1" stack="$2" remaining="$3" max_depth="$4" delegation="$5" timeout="${6:-}"
   provider_installed claude || {
     err "'claude' was not found on PATH."
     err 'Install Claude Code: https://code.claude.com/docs/en/setup'
@@ -558,6 +568,7 @@ run_claude() {
   fi
 
   MODEL_PEER_STACK="$stack" MODEL_PEER_MAX_DEPTH="$max_depth" \
+    MODEL_PEER_TIMEOUT="$timeout" \
     claude -p \
       --permission-mode plan \
       --tools "$tools" \
@@ -569,7 +580,7 @@ run_claude() {
 }
 
 run_codex() {
-  local prompt="$1" stack="$2" remaining="$3" max_depth="$4" delegation="$5"
+  local prompt="$1" stack="$2" remaining="$3" max_depth="$4" delegation="$5" timeout="${6:-}"
   provider_installed codex || {
     err "'codex' was not found on PATH."
     err 'Install Codex CLI: https://developers.openai.com/codex/cli'
@@ -583,6 +594,7 @@ run_codex() {
   bridge_prompt="$(consultation_prompt Codex "$prompt" "$remaining" "$delegation")"
 
   MODEL_PEER_STACK="$stack" MODEL_PEER_MAX_DEPTH="$max_depth" \
+    MODEL_PEER_TIMEOUT="$timeout" \
     codex exec \
       --sandbox read-only \
       --ephemeral \
@@ -606,7 +618,7 @@ gemini_supports_skip_trust() {
 }
 
 run_gemini() {
-  local prompt="$1" stack="$2" remaining="$3" max_depth="$4" delegation="$5"
+  local prompt="$1" stack="$2" remaining="$3" max_depth="$4" delegation="$5" timeout="${6:-}"
   provider_installed gemini || {
     err "'gemini' was not found on PATH."
     err 'Install Gemini CLI: https://google-gemini.github.io/gemini-cli/docs/get-started/'
@@ -672,6 +684,7 @@ POLICY
   # inherit it and leave the read-only contract depending on the developer's
   # environment. Verified against Gemini CLI 0.46.0.
   if MODEL_PEER_STACK="$stack" MODEL_PEER_MAX_DEPTH="$max_depth" \
+    MODEL_PEER_TIMEOUT="$timeout" \
       env -u GEMINI_CLI_TRUST_WORKSPACE gemini \
         --approval-mode plan \
         --policy "$policy" \
@@ -717,7 +730,7 @@ run_provider() {
 
   local status=0
   if run_with_limit "$label" "$timeout" \
-      "run_$provider" "$prompt" "$stack" "$remaining" "$max_depth" "$delegation"; then
+      "run_$provider" "$prompt" "$stack" "$remaining" "$max_depth" "$delegation" "$timeout"; then
     status=0
   else
     status=$?
