@@ -98,16 +98,36 @@ on a shared runner, which the suite does only as secondary evidence.
 
 ## Architecture notes
 
-Both consultation paths funnel through `run_provider`, which is the single chokepoint
-that enforces the guards, pushes the chain, resolves delegation, and computes the
-depth budget before delegating to `run_claude` / `run_codex` / `run_gemini`. Put
+Every consultation funnels through `run_provider` — the user's, and every one the
+broker performs on a peer's behalf. It is the single chokepoint that enforces the
+guards, pushes the chain, and computes the depth budget before either handing off to
+`mp_broker_run` or invoking `run_claude` / `run_codex` / `run_gemini` directly. Put
 policy in `run_provider`, not in the per-provider runners — those exist only to
-translate a prompt plus a delegation decision into one vendor's CLI flags.
+translate a finished prompt into one vendor's CLI flags, and they take no policy
+arguments at all.
 
-Keep `depth` and `delegation` separate. Depth is a limit; delegation is a permission
-resolved from the provider's ability to hold it narrowly. If you add a provider,
-decide its delegation support explicitly — defaulting to unsupported is the safe
-answer.
+The broker should stay small. Its job is: receive request, validate request, execute
+consultation, return result. It is a request parser and a state machine around
+`run_provider`, and it must not grow into an autonomous multi-agent planner. If
+solving a problem here requires turning Model Peer into a general agent runtime, the
+design has gone too far.
+
+Two rules that are easy to erode:
+
+- **The parser looks for the exact identifier issued for the current turn, and
+  nothing else.** There is no "find any block" path. A block carrying a stale,
+  absent, or mismatched identifier is ordinary output: neither parsed nor stripped,
+  and it survives into whatever the continuation replays. Model Peer reviews Model
+  Peer, so this repository contains the protocol in its own source tree.
+- **The identifier is framing, not authority.** It prevents accidental
+  interpretation of protocol-shaped text. It is not a security boundary and must not
+  be described as one — the boundary is `mp_broker_deny_reason`, which decides
+  whether the requested provider runs no matter what block a peer emits.
+
+`--timeout` is a deadline resolved once per invocation (`mp_begin_deadline`), and
+every hop derives its budget from what is left (`mp_budget`). Do not reintroduce a
+per-call duration: it turned `--depth 3 --timeout 600` into a possible 3000-second
+operation.
 
 New behavior needs a `tests/smoke.sh` assertion. The stubs make this nearly free, and
 they can capture generated artifacts: the Gemini stub copies the generated policy

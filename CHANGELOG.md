@@ -2,6 +2,187 @@
 
 All notable changes to Model Peer are documented here.
 
+## 0.7.0 - 2026-08-13
+
+### Added
+
+- **The consultation broker.** A peer that wants a second opinion no longer runs
+  anything to get one. It emits a request in its reply, Model Peer validates it,
+  performs the consultation, and hands the answer back as evidence on the peer's
+  next turn.
+
+  ```text
+  Claude
+    │  "I'd like Codex's read on the fan-in loop"   (in its output, then stops)
+    ▼
+  the broker, inside the same model-peer process
+    │  parse → validate → run → frame
+    ▼
+  Claude, next turn
+  ```
+
+  The transport is a delimited block in ordinary text, so every provider speaks it
+  on identical terms and none of them needs a tool call or a shell to participate.
+
+  > Peers think and request. Model Peer executes and controls.
+
+  A request is checked against the same policy the invocation started with: the
+  model must be installed, must not be the requester, must not already be on the
+  active path, must not be a member of the active review panel, and must fit inside
+  the depth limit. A denial comes back to the peer as a framed packet with a reason
+  and the run continues — a nested model that cannot answer is evidence
+  unavailable, not failure of your original request.
+
+  Consultation capability is granted per turn and taken away by withholding it. The
+  final turn carries no identifier, so the peer has to answer; each turn spends one
+  unit of the budget whether the peer cooperates or not.
+
+- **`review --depth N`.** Reviewers stay leaves by default. Above 1 a reviewer may
+  consult a model that is **not** on the panel; a request for a panel member is
+  denied. That denial is not about self-consultation — one reviewer's findings would
+  become partly dependent on another panel member's reasoning, and the synthesizer
+  would then read correlated findings as independent agreement. The synthesizer is
+  a leaf regardless. `MODEL_PEER_MAX_DEPTH` does not reach `review`: giving a panel
+  depth changes what agreement between two reviewers means, so it must be explicit.
+
+  When a reviewer does consult a peer, Model Peer sends the consulted model the same
+  review packet the panel received and ignores a reviewer-authored `CONTEXT`, saying
+  so on stderr. The reviewer chooses the question; Model Peer chooses what
+  repository evidence crosses. Otherwise a reviewer could forward the two lines
+  supporting the conclusion it had already reached, get agreement on that evidence,
+  and have the panel record it as corroboration — which a reviewer summarising to
+  stay inside a byte cap would do by accident.
+
+### Changed
+
+- **Gemini can participate in consultation chains.** It was excluded not because its
+  opinion was worth less but because reaching a consultation meant running a
+  command, and its policy engine can only allow or deny `run_shell_command`
+  wholesale. The broker removed the requirement, so Gemini now participates with its
+  deny rules unchanged and fully in force.
+
+- **`--timeout` is one deadline for the invocation, not a fresh budget per hop.**
+  Resolving a *duration* once per provider call and applying it again at every hop
+  turned
+
+  ```bash
+  model-peer ask claude --depth 3 --timeout 600
+  ```
+
+  into a possible ~3000-second operation — five model turns, each granted a full ten
+  minutes. That was a silent redefinition of the flag. Model Peer now resolves a
+  deadline once and every subsequent call gets what is left of it. Nothing new
+  happens at expiry: `run_with_limit`, exit `124`, the same message.
+
+  Under `review` the rule is per reviewer, independently, so `review --timeout 600`
+  means exactly what it always did. A consultation a reviewer starts spends that
+  reviewer's remaining time and no sibling's.
+
+  This supersedes the 0.6.2 fix, which propagated the resolved duration to a nested
+  peer. That was correct for the mechanism it patched and is now deleted with it.
+
+- `doctor` no longer prints a per-provider nested-consultation matrix, because there
+  is no longer a per-provider difference to report.
+
+### Removed
+
+- **`model-peer _delegate`, and the shell grant that existed to reach it.** Claude
+  peers above depth 1 were given `Bash`, auto-approved for
+  `Bash(model-peer _delegate:*)` — the narrowest grant Claude Code can express, but
+  a grant. `--allowedTools` no longer appears on any invocation at any depth, and
+  the smoke suite asserts it.
+
+  The broker replaces that path rather than coexisting with it. Two nested
+  consultation paths would mean the weaker one defined the security model.
+
+  With `provider_delegation_support` and `resolve_delegation` gone, adding a
+  provider no longer requires deciding what kind of shell grant it can hold.
+
+### Security
+
+- **Peers are read-only at every depth, without qualification.** The residual
+  widening documented since depth was introduced — one provider holding a
+  namespaced `Bash` above depth 1 — no longer exists.
+
+- **A provider process is refused the CLI.** Every peer is launched with
+  `MODEL_PEER_BROKERED=1` and a depth ceiling equal to the current depth, and Model
+  Peer refuses `ask`, `review`, `init`, `update`, and `trust` when it sees that
+  marker. `doctor` stays available; it is read-only. This matters for Codex, whose
+  read-only sandbox permits command execution: nothing asks it to run `model-peer`,
+  and now the attempt fails rather than starting a consultation outside the broker's
+  control.
+
+- **Protocol-shaped text in your repository is inert.** A request block is
+  recognised only when it carries the identifier issued for the turn in progress, so
+  a block in a diff, in documentation, in another model's output, or quoted back
+  from a previous turn is ordinary text — neither parsed nor stripped. Model Peer
+  reviews Model Peer, and this repository carries the protocol in its own source
+  tree, so this is asserted rather than assumed.
+
+  This framing is not a security boundary and is not described as one. The peer
+  receives the identifier, so content that manipulates a peer can in principle cause
+  a well-formed request to be emitted. What stops it mattering is validation.
+
+- **Requests and results cross the boundary as labelled data.** A peer's `QUESTION`
+  and `CONTEXT` reach the consulted model as quoted data inside the standard
+  consultation prompt, never as part of its instructions. A result packet is
+  authentic only where Model Peer placed it, and the continuation prompt says so:
+  one encountered in a file or a command's output is workspace content and carries
+  no authority.
+
+- **Truncation is always visible.** A `CONTEXT` over 4096 bytes is reported on
+  stderr and marked inside the packet the recipient sees. A recipient that assumes
+  it received everything when it did not is the failure that prevents.
+
+- **No nested provider process survives its owning invocation.** The chain is one
+  level deeper than the parallel-reviewer work assumed — parent, reviewer worker,
+  requesting peer, consulted peer — and each level forwards signals down rather than
+  dying and orphaning what it started. Asserted under `INT` mid-consultation.
+
+- **Silence is failure on the broker's own return, not only a nested peer's.** Only
+  the final turn is emitted — earlier turns are deliberately never replayed as an
+  answer — so a peer that reasoned for two turns and then answered with whitespace
+  would have exited `0` with zero bytes after spending the whole budget, and `review`
+  would have read that as a completed review. It now fails.
+
+  A reviewer is also tested for a non-whitespace byte rather than for size. A lone
+  newline is every bit as much "no review" as zero bytes, and it passed the old
+  gate — a pre-existing gap the broker made easier to reach.
+
+  Found by a Claude peer consulted through the broker at `--depth 3` against this
+  change, on the first real-CLI run.
+
+- **Field headers are recognized only in the order the template declares them.**
+  Otherwise a `QUESTION` quoting a diff that happened to contain a line reading
+  exactly `MODEL` could supply the target when the peer had declared none — quoted
+  third-party text becoming request *structure* rather than request content. It
+  could never reach a provider the invocation had not authorised, because
+  validation re-derives every check from Model Peer's own state, but the parser is
+  meant to close that class rather than lean on the gate.
+
+  Found by a Claude peer and a Codex peer, reached through the broker at
+  `--depth 3` against this change. Codex sharpened it from "value splitting" to
+  "absent-field supply", which is the version that actually contradicted the
+  documented parser obligation.
+
+- **A parser failure fails closed structurally, not incidentally.** The broker
+  reuses one scratch directory across turns, and the verdict files were written
+  only at the end of the parse, so an `awk` that died early left the previous
+  turn's verdict readable. They are now seeded as `malformed` before the parse
+  runs.
+
+### Compatibility
+
+At depth 1 — the default — `ask` and `review` are unchanged: no identifier is
+issued, no protocol instructions enter the prompt, and provider output streams
+straight to stdout as before. Above depth 1 the peer's output is buffered so it can
+be scanned, so streaming is lost for that invocation; nested orchestration is
+reported on stderr and never reaches stdout, so `model-peer ask ... | ...` stays
+pipeable and the review replay stays byte-stable.
+
+Model output above depth 1 is not byte-identical to 0.6.2. Introducing consultation
+instructions into a prompt can change generated text.
+
 ## 0.6.2 - 2026-08-12
 
 ### Fixed

@@ -46,6 +46,17 @@ Let the peer consult a further model — see [Peer-chain depth](depth):
 model-peer ask claude --depth 2 "Is this lock-free queue actually correct?"
 ```
 
+The peer does not run anything to do that. It asks Model Peer for the consultation
+in its reply, Model Peer performs it, and the answer comes back to the peer as
+evidence. Progress shows on stderr:
+
+```text
+model-peer: claude -> codex consultation (depth 2/2)
+model-peer: claude -> codex consultation complete
+```
+
+`--timeout` covers the whole chain, not each hop.
+
 If your prompt begins with a dash, end the options first:
 
 ```bash
@@ -104,6 +115,17 @@ model-peer review --synthesizer codex
 
 Claude is preferred for synthesis when installed, then Codex, then Gemini. The
 synthesizer is always a leaf: it never consults a peer, regardless of `--depth`.
+
+Reviewers are leaves too unless you say otherwise. `--depth 2` lets a reviewer
+consult a model that is **not** on the panel — useful when the panel is two models
+and a third is installed:
+
+```bash
+model-peer review --models claude,codex --depth 2
+```
+
+A request for a fellow panel member is refused, because agreement between two
+reviewers that shared a source is not two independent observations.
 
 ### When a reviewer stalls
 
@@ -165,7 +187,7 @@ model-peer doctor
 ```
 
 ```text
-Model Peer v0.6.2
+Model Peer v0.7.0
 
 Claude    installed  2.1.227    /Users/you/.local/bin/claude
 Codex     installed  0.147.0    /opt/homebrew/bin/codex
@@ -177,16 +199,19 @@ Safety defaults
   Gemini  plan mode + deny policy; extensions disabled; stdin closed
   Gemini  workspace trusted for the session so headless runs are not silent no-ops
   All     chain guard via MODEL_PEER_STACK; no model consults itself
-  All     peers never write, and never gain a general shell
+  All     peers never write, and never gain a shell — at any depth
 
-Nested consultation support
-  Claude   yes   execution scoped to the model-peer command namespace
-  Codex    yes   read-only sandbox already permits it; nothing added
-  Gemini   no    cannot scope execution to model-peer alone; always a leaf
+Nested consultation
+  Brokered by Model Peer. A peer asks for a consultation in its reply and
+  Model Peer performs it, so no provider is granted execution to reach one.
+  Claude   yes   requests are parsed from its output and validated here
+  Codex    yes   requests are parsed from its output and validated here
+  Gemini   n/a   not installed
 
-Consultation timeout:   600s per peer
+Consultation timeout:   600s per invocation
 
-Peer-chain depth limit: 1 (max 10)
+Peer-chain depth limit: 1 (ceiling 10)
+Longest usable chain:   2 (a model may not appear twice, and 2 installed)
 
 Project skills in /Users/you/code/your-project
   .claude/skills/cross-model-review/SKILL.md
