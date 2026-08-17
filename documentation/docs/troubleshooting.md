@@ -13,13 +13,16 @@ distinct signature.
 
 **Signature:** one reviewer produces nothing for minutes; the run appears frozen.
 
-Every consultation is bounded by a wall-clock timeout, 600 seconds by default:
+Every invocation is bounded by a wall-clock deadline, 600 seconds by default:
 
 ```bash
 model-peer review --timeout 300      # per reviewer
 model-peer ask codex --timeout 120
 model-peer review --timeout 0        # disable the bound
 ```
+
+It is one deadline, not one per hop: above `--depth 1`, a consultation the peer
+requests spends what is left of the same budget rather than opening a fresh one.
 
 Progress is reported on stderr every 30 seconds, so a slow consultation is
 distinguishable from a dead one:

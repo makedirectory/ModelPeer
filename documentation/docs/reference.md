@@ -30,8 +30,8 @@ Consult a single peer.
 
 | Option | Description |
 |---|---|
-| `--depth N` | Max peer-chain length, 1–10 (default 1) |
-| `--timeout S` | Give up after S seconds (default 600, `0` disables). Exits `124` on timeout. Bounds each consultation in the chain, including nested ones |
+| `--depth N` | Max peer-chain length, 1–10 (default 1). Above 1 the peer may ask Model Peer to consult a further model; it never runs anything itself |
+| `--timeout S` | Give up after S seconds (default 600, `0` disables). Exits `124` on timeout. One deadline for the whole invocation: a nested consultation spends what is left, never a fresh budget |
 | `--` | End options; everything after is the prompt |
 | `-h`, `--help` | Usage |
 
@@ -47,17 +47,24 @@ synthesize.
 |---|---|
 | `--models LIST` | Comma-separated reviewers (default: all installed) |
 | `--synthesizer MODEL` | `claude`, `codex`, or `gemini` |
-| `--timeout S` | Per-reviewer timeout in seconds (default 600, `0` disables). Also bounds synthesis |
+| `--depth N` | Max chain length per reviewer, 1–10 (default 1). Above 1 a reviewer may consult a model **outside** the panel |
+| `--timeout S` | Per-reviewer deadline in seconds (default 600, `0` disables). Also bounds synthesis |
 | `--strict` | Refuse to synthesize unless every reviewer completed |
 | `-h`, `--help` | Usage |
 
 Requires a Git working tree and at least two installed reviewers. The synthesizer
 defaults to the first available of `claude`, `codex`, `gemini`.
 
-`review` takes no `--depth`. Every reviewer and the synthesizer are leaves: none
-consults another model. Three reviewers that can consult each other are not three
-independent observations, so this is a property of the command rather than a
-setting. Passing `--depth` exits `2` with a pointer to `ask`.
+Reviewers are leaves at the default depth, and the synthesizer is a leaf always.
+`--depth 2` lets a reviewer consult a model that is not on the panel; a request for
+a panel member is denied, because two reviewers whose findings share a source are
+not two independent observations. `MODEL_PEER_MAX_DEPTH` does not apply here — a
+panel gets depth only when you ask for it explicitly.
+
+When a reviewer does consult a peer, Model Peer supplies the canonical review
+context and ignores a reviewer-authored `CONTEXT`, announcing the substitution on
+stderr. The reviewer chooses the question; Model Peer chooses what repository
+evidence crosses.
 
 `review` fans the working tree out to all requested reviewers **concurrently**.
 Each reviewer has its own timeout, running from the moment the panel starts. Model
@@ -208,8 +215,8 @@ most likely to have moved.
 |---|---|---|
 | `MODEL_PEER_REVIEWERS` | all installed | Default review panel, e.g. `claude,codex,gemini` |
 | `MODEL_PEER_SYNTHESIZER` | first available | Default synthesis model |
-| `MODEL_PEER_MAX_DEPTH` | `1` | Default peer-chain depth limit, 1–10. Inside a chain it is the inherited cap: a peer may lower it, never raise it |
-| `MODEL_PEER_TIMEOUT` | `600` | Default per-consultation timeout in seconds; `0` disables. Also how the resolved timeout reaches a nested peer, so `--timeout` applies at every depth |
+| `MODEL_PEER_MAX_DEPTH` | `1` | Default depth limit for `ask`, 1–10. Inside a chain it is the inherited cap: a peer may lower it, never raise it. `review` does not take it as a default |
+| `MODEL_PEER_TIMEOUT` | `600` | Default timeout in seconds; `0` disables. One deadline per invocation, and per reviewer under `review` |
 | `MODEL_PEER_MAX_DIFF_BYTES` | `500000` | Patch bytes embedded in review prompts |
 | `MODEL_PEER_BIN_DIR` | `~/.local/bin` | Install directory override |
 | `MODEL_PEER_STACK` | — | Managed by Model Peer; the active peer chain |

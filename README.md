@@ -32,15 +32,20 @@ Primary agent
 
 The peer supplies evidence, not authority. Project rules and invariants still win.
 
-`--depth` deliberately relaxes this for `ask`, and only for `ask`:
+`--depth` deliberately relaxes this, and it is opt-in:
 
 ```text
 depth 1 (default)      primary -> peer -> primary
 depth >1 (opt-in)      primary -> peer -> peer -> primary
 ```
 
-`model-peer review` never chains. Reviewers that can consult each other are not
-independent observations, which is the whole point of the panel.
+Even then the peer runs nothing. It *asks* Model Peer for the second opinion, and
+Model Peer decides whether to perform it.
+
+`model-peer review` keeps its reviewers as leaves unless you pass `--depth`, and even
+then a reviewer may only consult a model that is **not** on the panel. Reviewers that
+can consult each other are not independent observations, which is the whole point of
+the panel.
 
 The peer also starts in your working directory with read tools enabled, so you don't
 paste code into the question — name files and symbols and let it look.
@@ -69,7 +74,7 @@ git changes --+--> Codex ---+--> synthesis
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/makedirectory/ModelPeer/v0.6.2/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/makedirectory/ModelPeer/v0.7.0/install.sh | bash
 ```
 
 Or clone and run `./install.sh`. As with any remote shell installer, inspect it
@@ -145,15 +150,17 @@ before launch: it would otherwise enable MCP servers declared by the workspace, 
 Gemini starts as local subprocesses during tool discovery — before any tool policy
 applies. A reviewed repository does not get to configure its own reviewer.
 
-Consultation chains are bounded by `--depth` (default 1, ceiling 10) on `ask`, and
-a model is never consulted twice in one chain. Depth is a **limit, not a
-permission** — raising it increases how many models can participate, never what a
-model can do to your system. A delegating peer is granted exactly one command,
-`model-peer _delegate`, which cannot write files or raise its own ceiling.
+Consultation chains are bounded by `--depth` (default 1, ceiling 10), and a model is
+never consulted twice in one chain. Depth is a **limit, not a permission** — raising
+it increases how many models can participate, never what a model can do to your
+system. A peer that wants a second opinion asks for one in its reply; Model Peer
+validates the request and performs the consultation itself. No peer is given a shell,
+at any depth, and no peer can start a consultation Model Peer did not authorise.
 
-Every consultation is bounded by `--timeout`, including the synthesis step and any
-nested consultation a peer initiates — the resolved value is handed down the chain
-rather than re-defaulted at each hop.
+`--timeout` is one deadline for the whole invocation, not a fresh budget per hop, so
+`--depth 3 --timeout 600` is a ten-minute operation rather than a possible fifty.
+Under `review` the deadline is per reviewer, and a consultation a reviewer starts
+comes out of its own budget.
 
 Reviews cover untracked files as well as tracked changes, so new code is reviewed
 rather than merely listed.

@@ -36,9 +36,11 @@ claude -p --permission-mode plan --tools "Read,Glob,Grep" \
 Runs non-interactively in Plan mode with only `Read`, `Glob`, and `Grep` exposed.
 Bash and file-edit tools are intentionally not provided.
 
-This is the only provider whose boundary `--depth` changes. Above depth 1, `Bash` is
-added and auto-approved solely for `Bash(model-peer:*)` — the narrowest grant Claude
-Code can express. See [Peer-chain depth](depth#the-residual-widening-stated-plainly).
+These flags do not vary with `--depth`. Until v0.7 they did: a Claude peer allowed to
+consult another model was given `Bash`, auto-approved solely for
+`Bash(model-peer _delegate:*)`, because it had to run Model Peer itself to reach one.
+The [consultation broker](depth#what-changed-in-v07) removed the need, so no
+provider receives execution at any depth. See [Peer-chain depth](depth).
 
 ## Codex
 
@@ -49,10 +51,12 @@ codex exec --sandbox read-only --ephemeral --skip-git-repo-check "<prompt>" </de
 `--sandbox read-only` prevents workspace writes. `--ephemeral` avoids persisting a
 session, and `--skip-git-repo-check` allows standalone consultation outside a repo.
 
-Codex is the one provider where delegation grants **no new capability at all** — the
-read-only sandbox already permits read-only execution, so the CLI flags are byte
-identical with and without delegation. Only the prompt differs. Model Peer's test
-suite asserts this.
+The read-only sandbox does permit read-only command execution, which is why a Codex
+peer could in principle run `model-peer` even though nothing asks it to. Model Peer
+marks every provider process as brokered and refuses `ask`, `review`, `init`,
+`update`, and `trust` when it sees that marker, so the attempt fails rather than
+starting a consultation outside the broker's control. The flags themselves do not
+vary with depth, and the test suite asserts that.
 
 ## Gemini
 
@@ -135,8 +139,12 @@ invoked exactly as before.
 As a second line of defense against silent failure of any kind, a reviewer that
 returns zero bytes is treated as a failure rather than as an empty finding list.
 
-**These rules are unconditional.** `--depth` never relaxes them, which is why a
-Gemini peer is always a leaf. The Plan-mode pair matters specifically because exiting
+**These rules are unconditional.** `--depth` never relaxes them. Before v0.7 that
+came at a cost — Gemini could not participate in a consultation chain at all,
+because reaching one meant running a command and its policy engine cannot scope
+`run_shell_command` to a single program. Since the broker performs consultations on
+a peer's behalf, Gemini participates on the same terms as everyone else with the
+deny rules still in force. The Plan-mode pair matters specifically because exiting
 Plan mode is how a peer would otherwise escape read-only.
 
 ## Credentials
@@ -151,5 +159,5 @@ Report privately through
 [GitHub's private vulnerability reporting](https://github.com/makedirectory/ModelPeer/security)
 rather than opening a public issue with exploit details. Most valuable are issues
 that break a documented boundary — a peer that writes to the workspace, escapes Plan
-mode or the read-only sandbox, obtains execution beyond what its delegation permits,
-or evades the chain guards.
+mode or the read-only sandbox, obtains execution of any kind, causes a consultation
+the broker did not authorise, or evades the chain guards.

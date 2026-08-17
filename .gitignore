@@ -31,3 +31,6 @@ documentation/.cache-loader/
 .gemini/*
 !.gemini/skills/
 !.gemini/skills/**
+
+# Specs
+specs/

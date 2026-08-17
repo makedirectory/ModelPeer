@@ -97,12 +97,12 @@ A skill is discoverable by whichever agent is running in the directory — inclu
 a peer that Model Peer just spawned there. The body ends with:
 
 > If you are reading this **while acting as a peer** in someone else's
-> consultation, these instructions do not apply to you. Answer the question and
-> consult no one.
+> consultation, these instructions do not apply to you. Answer the question you
+> were asked.
 
-Model Peer's consultation prompt already tells peers not to delegate, and the
-[chain guard](depth) enforces it regardless. This line is the third layer, and it
-is free.
+A peer cannot act on those instructions anyway: it has no shell, `model-peer`
+refuses to run for a brokered process, and the [chain guard](depth) would refuse
+the call even if it did. This line is the layer above all of that, and it is free.
 
 ## Where each CLI looks
 

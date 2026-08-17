@@ -79,12 +79,13 @@ in `install.sh`.
 ### Command structure
 
 `bin/model-peer` dispatches from `main` into `cmd_ask`, `cmd_review`, `cmd_init`,
-`cmd_update`, or `cmd_doctor`. Both consultation paths funnel
-through `run_provider`, which is the
-single chokepoint that enforces the guards, pushes the chain, and computes the
-depth budget before delegating to `run_claude` / `run_codex` / `run_gemini`. Put
-policy in `run_provider`, not in the per-provider runners — those exist only to
-translate a prompt plus a depth budget into one vendor's CLI flags.
+`cmd_update`, `cmd_trust`, or `cmd_doctor`. Every consultation funnels through
+`run_provider` — the user's, and every one the broker performs on a peer's behalf.
+It is the single chokepoint that enforces the guards, pushes the chain, and computes
+the depth budget before either handing off to `mp_broker_run` or invoking
+`run_claude` / `run_codex` / `run_gemini` directly. Put policy in `run_provider`,
+not in the per-provider runners — those take a finished prompt and no policy
+arguments at all, and exist only to translate it into one vendor's CLI flags.
 
 ### The peer chain
 
@@ -96,47 +97,89 @@ independent guards via `check_chain`:
    `MODEL_PEER_MAX_DEPTH`, then 1; ceiling 10). Exceeding it exits `64`.
 2. A model may never be consulted by itself, at any depth. Also exits `64`.
 
-### Depth vs. delegation
-
-These are two separate concepts and must stay separate:
-
-```text
-depth       maximum recursion depth — a limit, never a permission
-delegation  permission to initiate a further consultation, and the mechanism
-```
+### The consultation broker
 
 The invariant to preserve in any change here:
 
 > Increasing depth may increase how many models can participate.
 > Increasing depth must never increase what a model can do to the host system.
 
-`remaining = max_depth - new_depth` is only a *budget*. `resolve_delegation` turns
-that budget into an actual permission, and returns `none` unless the provider can
-hold the permission narrowly (`provider_delegation_support`):
+Since v0.7 this holds without qualification, because a peer executes nothing. It
+emits a delimited request block in its ordinary output; `run_provider` hands the
+turn loop to `mp_broker_run`, which parses it, validates it, performs the
+consultation through `run_provider`, frames the answer, and re-invokes the same peer
+with it.
 
-- `claude` → `namespaced`: `Bash` auto-approved only for `Bash(model-peer:*)`
-- `codex` → `sandboxed`: read-only sandbox already permits it; **no flags change**
-- `gemini` → `unsupported`: its policy engine only allows or denies
-  `run_shell_command` wholesale, so it is always a leaf and its deny rules are
-  unconditional
+> Peers think and request. Model Peer executes and controls.
 
-A depth budget a provider cannot safely hold is reported on stderr via `note`,
-never silently converted into a wider sandbox. If you add a provider, decide its
-delegation support explicitly; defaulting to `unsupported` is the safe answer.
+Do not reintroduce a second nested-consultation path. `_delegate` was removed
+precisely because two paths would mean the weaker one defined the security model.
+There is no `--allowedTools` on any invocation, no per-provider delegation matrix,
+and adding a provider no longer requires deciding its "delegation support".
 
-`consultation_prompt` takes the resolved delegation, not the raw budget — a peer
-that may not delegate is told so and sees `Remaining peer-chain depth: 0`, even if
-depth remained. Prompt and capability must never disagree.
+Rules that are easy to erode, in rough order of how much damage losing them does:
 
-The long-term fix is a consultation broker (see the README roadmap): peers request
-a consultation from the parent process instead of executing `model-peer`, removing
-the last capability grant. Changes that deepen the current shell-based approach are
-moving away from that.
+- **The parser looks for the exact nonce issued for the current turn, and nothing
+  else** (`mp_parse_request`). There is no "find any block" path. A block carrying a
+  stale, absent, or mismatched nonce is ordinary output: neither parsed nor
+  stripped, and it survives into whatever the continuation replays. This repository
+  contains the protocol in its own source tree and Model Peer reviews Model Peer, so
+  a generic scan would broker its own documentation.
+- **The nonce is framing, not authority.** It prevents accidental interpretation of
+  protocol-shaped text. Never describe it as a security boundary; the boundary is
+  `mp_broker_deny_reason`, which decides whether the requested provider runs no
+  matter what a peer emits.
+- **Field headers are recognized in template order only.** A bare header that would
+  move backwards is value text, so a `QUESTION` quoting a diff containing a line
+  reading exactly `MODEL` cannot supply the target when the peer declared none.
+  The deny gate would have caught it anyway — that is the point of having a gate —
+  but the parser closes the class rather than leaning on it.
+- **The final turn carries no nonce.** Capability disappears rather than being
+  parsed away, so there is no case where the parent has stripped a request block and
+  is holding nothing. `turn budget = available + 1` is what makes the sequence
+  terminate whether or not the peer cooperates.
+- **Only the immediately preceding turn is replayed.** `T3 = task + T2 output +
+  result 2`, never an accumulating transcript. Measured at depth 3, T3 came out
+  *smaller* than T2. An earlier design had the peer write an explicit `NOTES`
+  handoff; two prototype runs showed it wrote its reasoning twice and the cap
+  truncated the second copy mid-sentence. Do not add it back.
+- **Nothing in the continuation may read as "stop looking and answer."** A
+  prototype that took thirty-eight agentic turns read the vendor's shipping source
+  and overturned a false premise that the three-turn answers had inherited and
+  reported fluently. A low turn count is an efficiency metric, not a correctness
+  one — the same doctrine as "silence is failure, not consent", pointed the other
+  way.
+- **Under `review`, Model Peer owns the repository evidence** (`mp_broker_context`).
+  A reviewer-supplied `CONTEXT` is ignored, not rejected, and the substitution is
+  announced. The peer decides what question to ask; Model Peer decides what evidence
+  crosses. Letting a reviewer author it lets it forward the two lines supporting its
+  own conclusion and omit the rest — which a reviewer summarising to fit a byte cap
+  does by accident.
+
+`--timeout` is a **deadline**, resolved once per invocation by `mp_begin_deadline`,
+with every hop deriving its budget from `mp_budget`. Resolving a duration per call
+turned `--depth 3 --timeout 600` into a possible ~3000s operation. `review` sets one
+deadline per reviewer inside the worker subshell, which is also what makes the panel
+roster and the review context worker-private for free.
 
 `cmd_review` deliberately does not overwrite `MODEL_PEER_STACK`. At top level the
 chain is empty, so each reviewer starts fresh; a review launched from inside a peer
 chain inherits that chain and cannot escape the guard. The synthesizer is forced to
-be a leaf by passing it a depth limit of exactly `stack_depth + 1`.
+be a leaf by passing it a depth limit of exactly `stack_depth + 1`, and `--depth`
+never reaches it.
+
+`MP_PANEL_ROSTER` blocks a reviewer from consulting a fellow panel member. That is
+not a self-consultation rule — it exists because one reviewer's findings would
+otherwise depend on another panel member's reasoning, and the synthesizer would read
+correlated findings as independent agreement. Keep it out of prompts and out of the
+provider environment: a peer does not need to know why a request would be denied
+before making it, and the denial explains it afterwards.
+
+Every provider process is launched with `MODEL_PEER_BROKERED=1` and a
+`MODEL_PEER_MAX_DEPTH` equal to the current depth. `main` refuses `ask`, `review`,
+`init`, `update`, and `trust` when the marker is set. This matters for Codex, whose
+read-only sandbox permits command execution: nothing asks it to run `model-peer`, and
+now the attempt fails rather than starting a consultation outside the broker.
 
 ### Repo setup (`init` / `update`)
 
@@ -255,13 +298,14 @@ mutates the developer's index, and a review command must not.
 
 ### Provider safety contracts
 
-Each runner is a read-only consultation contract, tightened per vendor:
+Each runner is a read-only consultation contract, tightened per vendor. None of it
+varies with depth:
 
-| Provider | Baseline | With delegation |
-|---|---|---|
-| `claude` | plan mode, `--tools Read,Glob,Grep`, stdin closed | adds `Bash`, auto-approved only for `Bash(model-peer:*)` |
-| `codex` | `--sandbox read-only --ephemeral`, stdin closed | identical flags; only the prompt differs |
-| `gemini` | plan mode, generated deny policy, `-e none`, stdin closed | n/a — never delegates |
+| Provider | Contract, at every depth |
+|---|---|
+| `claude` | plan mode, `--tools Read,Glob,Grep`, stdin closed |
+| `codex` | `--sandbox read-only --ephemeral`, stdin closed |
+| `gemini` | plan mode, generated deny policy, `-e none`, `--skip-trust`, stdin closed |
 
 Gemini's policy TOML is generated per call into a temp dir and removed afterwards.
 Deny rules for `write_file`, `replace`, `run_shell_command`, `enter_plan_mode`, and

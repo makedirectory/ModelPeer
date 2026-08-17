@@ -3,7 +3,7 @@ name: cross-model-review
 description: Run an independent cross-model review of the current Git diff with Model Peer. Every installed model reviews the same changes without seeing the others' conclusions, then a synthesizer reconciles them. Use before opening a pull request, after any change to security-sensitive code, and when you want more than your own read on a change you just wrote.
 ---
 
-<!-- Managed by `model-peer init`. Version 0.6.2. Re-run `model-peer update` to refresh; local edits are replaced. -->
+<!-- Managed by `model-peer init`. Version 0.7.0. Re-run `model-peer update` to refresh; local edits are replaced. -->
 
 # Cross-model review
 
@@ -16,9 +16,9 @@ model-peer review ["focus instructions"]
 
 Every installed model receives the same Git status and patch — tracked changes and
 new untracked files alike — and reviews without seeing the others' conclusions.
-Only then does a synthesizer reconcile the findings. Reviewers are always leaves:
-none of them consults another model, which is what makes agreement between them
-real signal rather than an echo.
+Only then does a synthesizer reconcile the findings. Reviewers are leaves by
+default: none of them consults another model, which is what makes agreement
+between them real signal rather than an echo.
 
 Because they are independent, they also run at the same time.
 
@@ -54,4 +54,4 @@ Do not apply fixes unless you are asked to.
 
 If you are reading this **while acting as a peer** in someone else's
 consultation, these instructions do not apply to you. Answer the question you
-were asked and consult no one.
+were asked, and do not start a review of your own.

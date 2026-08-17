@@ -3,7 +3,7 @@ name: cross-model-consult
 description: Ask Claude or Gemini for an independent second opinion on one focused question, using Model Peer. Use before committing to an architecture, schema, or migration decision; on security-sensitive work such as authn/authz, sandboxing, input handling, secrets, or crypto; when a bug has outlived two of your own hypotheses; when you are inferring the behaviour of unfamiliar code or a dependency; and when two approaches are tied and you want the tradeoff.
 ---
 
-<!-- Managed by `model-peer init`. Version 0.6.2. Re-run `model-peer update` to refresh; local edits are replaced. -->
+<!-- Managed by `model-peer init`. Version 0.7.0. Re-run `model-peer update` to refresh; local edits are replaced. -->
 
 # Consult a peer
 
@@ -57,8 +57,13 @@ When a peer materially changed your decision, say which model you asked and
 whether you took the advice. Never present a peer's output as your own conclusion.
 
 Leave `--depth` at its default: each peer answers alone, and lengthening the chain
-is a human's deliberate call. A model is never consulted twice in one chain.
+is a human's deliberate call. Above depth 1 the peer does not run anything — it
+asks Model Peer for a second opinion and Model Peer performs the consultation —
+but every hop still costs time and money. A model is never consulted twice in one
+chain.
 
 If you are reading this **while acting as a peer** in someone else's
 consultation, these instructions do not apply to you. Answer the question you
-were asked and consult no one.
+were asked. You cannot run Model Peer, and do not need to: if another model's
+opinion would change your answer, request it in your reply exactly as the prompt
+you were given describes.

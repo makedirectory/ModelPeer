@@ -6,16 +6,10 @@ sidebar_position: 10
 
 # Roadmap
 
-## Consultation broker
+## Consultation broker — done in v0.7
 
-Today a peer that is permitted to consult another model does so by executing
-`model-peer` itself, which requires granting it outbound execution capability. Model
-Peer scopes that as narrowly as each provider allows, and excludes providers that
-cannot scope it at all — but the capability still exists for Claude peers above depth
-1.
-
-The intended architecture inverts this. Model Peer owns the recursion, and a peer
-*requests* a consultation from the parent process rather than running a command.
+The broker shipped. A peer no longer executes anything to consult another model: it
+*requests* a consultation, and the parent Model Peer invocation performs it.
 
 ```text
                 model-peer
@@ -32,30 +26,24 @@ The intended architecture inverts this. Model Peer owns the recursion, and a pee
         Gemini
 ```
 
-The parent already knows everything needed to adjudicate: the current depth, the
-maximum, the models already visited, the read-only requirements, and the recursion
-policy.
-
-```text
-Claude requests Gemini
-Current depth: 1
-Maximum: 2
-Gemini not already in call chain
--> allowed
-```
-
-Claude never needs `Bash` at all, which restores the strongest possible guarantee:
+That removed the last capability grant. Claude no longer receives `Bash` at any
+depth, `_delegate` is gone, and the uneven provider matrix went with it — Gemini
+participates in chains again, because participation no longer requires shell access.
 
 > Peers remain read-only regardless of consultation depth.
 
-It also removes the uneven provider matrix — Gemini could participate in chains
-again, because participation would no longer require shell access.
+See [Peer-chain depth](depth) for how requests are validated and how the turn budget
+guarantees a chain terminates.
 
-## Central policy enforcement
+## Consultation budgets
 
-Once recursion is brokered centrally, richer policy becomes cheap. Per-model call
+Depth is not what actually bounds spend. A model may never appear twice on one path,
+so with three providers a chain rooted at one model can initiate at most two further
+consultations — the roster is the real limit, and `--depth` above 3 has never done
+anything.
 
-self-consultation check that is possible today:
+That stops being true at a fourth provider, which is when budgets become a
+requirement rather than an option:
 
 ```bash
 model-peer review --depth 2 --max-consultations 5 --models claude,codex,gemini
@@ -79,8 +67,26 @@ Claude
 ```
 
 is refused, because the guard tests membership across the whole chain rather than
-only against the immediately preceding model. What remains for the broker is the
-per-model and total call budgets above.
+only against the immediately preceding model. What remains is the per-model and
+total call budgets above.
+
+## MCP
+
+All three vendor CLIs support stdio MCP servers, and MCP is a real structured tool
+interface — but it is deliberately not how the broker works. A JSON-RPC 2.0 server
+means either a JSON parser written in Bash 3.2 or a runtime dependency, and Model
+Peer is one dependency-free Bash script. It also inverts ownership: a stdio MCP
+server is spawned by the peer's CLI, so the broker would become a child of the peer
+rather than part of the parent.
+
+If MCP proves useful, it belongs in a separate package wrapping the public Model
+Peer interface, not inside the core script.
+
+## Same-panel consultation
+
+`review` currently denies a reviewer's request for a fellow panel member. Allowing
+it is conceivable, but only alongside telling the synthesizer which findings are
+correlated — otherwise the report presents an echo as corroboration.
 
 ## Not planned
 
