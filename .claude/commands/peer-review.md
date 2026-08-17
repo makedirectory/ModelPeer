@@ -4,7 +4,7 @@ argument-hint: [focus instructions]
 allowed-tools: Bash(model-peer:*)
 ---
 
-<!-- Managed by `model-peer init`. Version 0.7.0. Re-run `model-peer update` to refresh. -->
+<!-- Managed by `model-peer init`. Version 0.7.1. Re-run `model-peer update` to refresh. -->
 
 Run an independent cross-model review of the current working tree with
 `model-peer review`, passing `$ARGUMENTS` as the focus when it is non-empty.

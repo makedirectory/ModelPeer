@@ -186,7 +186,7 @@ mkdir -p "$MP_TEST_STATE_DIR"
 reset_turns() { rm -f "$MP_TEST_STATE_DIR"/turn-*; }
 
 # Basic CLI/version.
-[[ "$(model-peer --version)" == 'model-peer 0.7.0' ]]
+[[ "$(model-peer --version)" == 'model-peer 0.7.1' ]]
 
 # Ask dispatch + safety args + stdin closure.
 printf 'sentinel\n' | model-peer ask codex 'review this' >/dev/null

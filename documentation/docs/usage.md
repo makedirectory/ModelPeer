@@ -187,7 +187,7 @@ model-peer doctor
 ```
 
 ```text
-Model Peer v0.7.0
+Model Peer v0.7.1
 
 Claude    installed  2.1.227    /Users/you/.local/bin/claude
 Codex     installed  0.147.0    /opt/homebrew/bin/codex
