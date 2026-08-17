@@ -68,6 +68,7 @@ mp_stub_log() {
 #   MP_TEST_CONSULT_CLAUDE='codex gemini'   claude asks codex, then gemini
 #   MP_TEST_CONSULT_BAD=1                   emit an unterminated block instead
 #   MP_TEST_CONSULT_CONTEXT=...             what to put in CONTEXT
+#   MP_TEST_CONSULT_QUESTION=...            what to put in QUESTION
 #
 # Returns 0 when it emitted a request (the caller should stop), 1 when the stub
 # should answer normally. Inert unless the matching queue variable is set, so
@@ -89,8 +90,8 @@ mp_stub_consult() {
   for target in $queue; do
     if (( n == idx )); then
       printf 'working prose from %s, turn %s\n' "$name" "$(( idx + 1 ))"
-      printf '<<<MODEL-PEER-CONSULT %s>>>\nMODEL\n%s\nQUESTION\nwhat does %s make of this?\n' \
-        "$nonce" "$target" "$target"
+      printf '<<<MODEL-PEER-CONSULT %s>>>\nMODEL\n%s\nQUESTION\n%s\n' \
+        "$nonce" "$target" "${MP_TEST_CONSULT_QUESTION:-what does $target make of this?}"
       if [[ -n "${MP_TEST_CONSULT_CONTEXT:-}" ]]; then
         printf 'CONTEXT\n%s\n' "$MP_TEST_CONSULT_CONTEXT"
       fi
@@ -335,6 +336,20 @@ for sub in ask review init update trust; do
 done
 # doctor stays available: it is read-only and answers "who is here".
 MODEL_PEER_BROKERED=1 model-peer doctor >/dev/null
+# --probe does not. It runs one real consultation per installed CLI, and does it
+# with MODEL_PEER_STACK cleared, so it spends usage and erases the chain guard —
+# every property the refusals above exist to deny, reached through a command that
+# looked diagnostic.
+: > "$LOG"
+if MODEL_PEER_BROKERED=1 MODEL_PEER_STACK='claude:codex' \
+    model-peer doctor --probe >/dev/null 2>&1; then
+  echo 'expected a brokered peer to be refused doctor --probe' >&2; exit 1
+else
+  [[ $? -eq 64 ]]
+fi
+if grep -q 'ARGS:' "$LOG"; then
+  echo 'expected a refused doctor --probe to consult nobody' >&2; exit 1
+fi
 
 # Depth is still reported honestly to the peer.
 : > "$LOG"
@@ -630,6 +645,54 @@ awk '/^GEMINI ARGS:/,0' "$LOG" | grep -Fq 'REVIEW_CONTEXT_SENTINEL' \
 if grep -Fq 'MP_PANEL_ROSTER' "$LOG"; then
   echo 'expected the panel roster to stay out of provider prompts and environments' >&2; exit 1
 fi
+
+# The synthesizer is on the roster even when it is not reviewing. It reconciles
+# every review, so a reviewer that consults it would have it meet its own opinion
+# again as someone else's independent finding — and with two reviewers doing it,
+# read that back as corroboration between them.
+#
+# With three models installed, a panel of two plus an outside synthesizer covers
+# all of them, so the observable effect is that nobody is offered the protocol.
+# Before the synthesizer joined the roster, Claude was offered here.
+: > "$LOG"; reset_turns
+MP_TEST_CONSULT_CODEX='claude' \
+  model-peer review --models codex,gemini --synthesizer claude --depth 2 'synth roster' \
+  >/dev/null 2>"$TMP/synth.err"
+if grep -Fq 'MODEL-PEER-CONSULT' "$LOG"; then
+  echo 'expected the synthesizer to close the roster, leaving nobody to consult' >&2; exit 1
+fi
+grep -Fq 'the panel and synthesizer cover' "$TMP/synth.err" \
+  || { echo 'expected depth to be reported as inert once the synthesizer joins the roster' >&2; exit 1; }
+# Claude synthesized, and was consulted by nobody.
+[[ "$(grep -c '^CLAUDE ARGS:' "$LOG")" -eq 1 ]] \
+  || { echo 'expected Claude to synthesize once and be consulted by nobody' >&2; exit 1; }
+
+# --depth above 1 buys nothing when the panel already covers every installed
+# model, which is the default. Prompt and capability must never disagree, so a
+# reviewer that cannot consult anyone is not told that it may.
+: > "$LOG"; reset_turns
+model-peer review --models claude,codex,gemini --synthesizer claude --depth 2 \
+  'full panel depth' >/dev/null 2>"$TMP/fullpanel.err"
+grep -Fq 'the panel and synthesizer cover' "$TMP/fullpanel.err" \
+  || { echo 'expected a full panel to report that depth changes nothing' >&2; exit 1; }
+if grep -Fq 'MODEL-PEER-CONSULT' "$LOG"; then
+  echo 'expected no consultation protocol in a full-panel review prompt' >&2; exit 1
+fi
+grep -Fq 'do not consult any other model' "$LOG" \
+  || { echo 'expected a leaf reviewer to be told so plainly' >&2; exit 1; }
+
+# QUESTION is peer-authored and crosses verbatim, so it is bounded like CONTEXT.
+# Without that, a reviewer forbidden from choosing the repository evidence can
+# paste the excerpt it prefers into the question and get the same effect.
+: > "$LOG"; reset_turns
+MP_TEST_CONSULT_QUESTION="$(awk 'BEGIN { while (i++ < 400) printf "QUESTION-PADDING-LINE\n" }')" \
+  MP_TEST_CONSULT_CLAUDE='gemini' \
+  model-peer review --models claude,codex --synthesizer codex --depth 2 'long question' \
+  >/dev/null 2>"$TMP/qcap.err"
+grep -Eq 'consultation QUESTION truncated from [0-9]+ to 8192 bytes' "$TMP/qcap.err" \
+  || { echo 'expected an oversized QUESTION to be truncated and reported' >&2; exit 1; }
+awk '/^GEMINI ARGS:/,0' "$LOG" | grep -Fq '[QUESTION TRUNCATED BY MODEL PEER]' \
+  || { echo 'expected the truncation to be marked in the packet the peer sees' >&2; exit 1; }
 git checkout -- demo.txt 2>/dev/null || true
 printf 'two\n' > demo.txt
 
