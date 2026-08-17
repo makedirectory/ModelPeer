@@ -53,10 +53,24 @@ session, and `--skip-git-repo-check` allows standalone consultation outside a re
 
 The read-only sandbox does permit read-only command execution, which is why a Codex
 peer could in principle run `model-peer` even though nothing asks it to. Model Peer
-marks every provider process as brokered and refuses `ask`, `review`, `init`,
-`update`, and `trust` when it sees that marker, so the attempt fails rather than
-starting a consultation outside the broker's control. The flags themselves do not
-vary with depth, and the test suite asserts that.
+marks every provider process as brokered via `MODEL_PEER_BROKERED` and refuses
+`ask`, `review`, `init`, `update`, `trust`, and `doctor --probe` when it sees that
+marker. The flags themselves do not vary with depth, and the test suite asserts that.
+
+:::caution A guardrail, not a boundary
+The marker is an environment variable, so a peer that can execute commands can
+clear it. It reliably stops the *inadvertent* case — a model that reaches for a
+familiar command — which is the case that actually occurs. It does not stop a
+determined or prompt-injected peer, and nothing inside Model Peer can: preventing a
+sandbox that permits command execution from running a program on `PATH` is not
+something the program itself can enforce.
+
+What that peer would gain is a consultation Model Peer did not authorise — spending
+model usage, escaping the deadline, and stepping outside the panel-independence rule.
+It gains no write access: whatever it starts is launched by the same read-only
+contracts described on this page. Treat the panel rules as protecting the *integrity
+of a review you asked for*, not as containment of a hostile model.
+:::
 
 ## Gemini
 

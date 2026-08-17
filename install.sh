@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="0.7.0"
+VERSION="0.7.1"
 BIN_DIR="${MODEL_PEER_BIN_DIR:-$HOME/.local/bin}"
 DO_SETUP=0
 INSTALL_DEPS=0
@@ -9,7 +9,7 @@ DO_LOGIN=0
 
 usage() {
   cat <<'USAGE'
-Model Peer installer v0.7.0
+Model Peer installer v0.7.1
 
 Usage:
   ./install.sh [options]
@@ -83,12 +83,12 @@ write_commands() {
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="0.7.0"
+VERSION="0.7.1"
 PROGRAM="model-peer"
 
 usage() {
   cat <<'USAGE'
-Model Peer v0.7.0 — cross-model peer review for coding agents.
+Model Peer v0.7.1 — cross-model peer review for coding agents.
 
 Usage:
   model-peer ask claude "<focused question>"
@@ -564,6 +564,12 @@ require_nonempty_prompt() {
 # ---------------------------------------------------------------------------
 
 MP_CONSULT_CONTEXT_MAX=4096
+# QUESTION is bounded too. It is peer-authored text that crosses the boundary
+# verbatim, so leaving it unbounded would undo mp_broker_context: a reviewer told
+# it may not choose the repository evidence can otherwise paste the excerpt it
+# prefers into the question and get the same effect. Larger than CONTEXT because a
+# question legitimately carries more prose than a pointer does.
+MP_CONSULT_QUESTION_MAX=8192
 
 # The review panel currently running, space-separated. A reviewer worker sets it;
 # it is never exported to a provider process and never appears in a prompt. A
@@ -606,6 +612,25 @@ mp_in_words() {
 #
 # An empty result means no consultation is possible, which is how the turn budget
 # and the depth limit both come to an end.
+# Would this reviewer have anyone left to consult once it is on the chain?
+#
+# --depth alone cannot answer that. The default panel is every installed model, so
+# mp_available_models excludes all of them and the reviewer is a leaf however high
+# --depth goes. Deciding the prompt from --depth instead of from availability is
+# how a reviewer ends up told both "you may ask for one independent check" and "do
+# not invoke any other model" in the same prompt, with nothing it could ask.
+#
+# The reviewer is not on the chain yet — run_provider pushes it — so it will be one
+# hop deeper than here when mp_available_models runs for real. Asking against
+# max_depth - 1 is the same question from where the caller is standing.
+mp_reviewer_may_consult() {
+  local provider="$1" max_depth="$2" roster="$3" saved="${MP_PANEL_ROSTER:-}" out
+  MP_PANEL_ROSTER="$roster"
+  out="$(mp_available_models "$provider" "$(( max_depth - 1 ))" '')"
+  MP_PANEL_ROSTER="$saved"
+  [[ -n "$out" ]]
+}
+
 mp_available_models() {
   local self="$1" max_depth="$2" consulted="$3" out='' p
   (( $(stack_depth) < max_depth )) || return 0
@@ -695,18 +720,26 @@ mp_parse_request() {
 # Truncation is always visible: reported on stderr, and marked inside the packet
 # the recipient actually sees. A recipient that assumes it received everything
 # when it did not is the failure this prevents.
-mp_bound_context() {
-  local infile="$1" outfile="$2" bytes
+mp_bound_field() {
+  local infile="$1" outfile="$2" label="$3" max="$4" bytes
   bytes="$(wc -c < "$infile" | tr -d ' ')"
-  if (( bytes > MP_CONSULT_CONTEXT_MAX )); then
-    note "consultation CONTEXT truncated from $bytes to $MP_CONSULT_CONTEXT_MAX bytes"
+  if (( bytes > max )); then
+    note "consultation $label truncated from $bytes to $max bytes"
     {
-      head -c "$MP_CONSULT_CONTEXT_MAX" "$infile"
-      printf '\n[CONTEXT TRUNCATED BY MODEL PEER]\n'
+      head -c "$max" "$infile"
+      printf '\n[%s TRUNCATED BY MODEL PEER]\n' "$label"
     } > "$outfile"
   else
     cat "$infile" > "$outfile"
   fi
+}
+
+mp_bound_context() {
+  mp_bound_field "$1" "$2" CONTEXT "$MP_CONSULT_CONTEXT_MAX"
+}
+
+mp_bound_question() {
+  mp_bound_field "$1" "$2" QUESTION "$MP_CONSULT_QUESTION_MAX"
 }
 
 # Who authors the repository evidence a consultation carries is a rule, not an
@@ -936,15 +969,16 @@ mp_broker_run() {
       continue
     fi
 
-    local target question_file context_raw context_use
+    local target question_raw question_file context_raw context_use
     target="$(grep -m1 -v '^[[:space:]]*$' "$dir/model" 2>/dev/null || true)"
     target="$(printf '%s' "$target" | tr -d '[:space:]')"
-    question_file="$dir/question"
+    question_raw="$dir/question"
+    question_file="$dir/question.bounded"
     context_raw="$dir/context"
     context_use="$dir/context.bounded"
 
     local reason=''
-    if [[ ! -s "$question_file" ]] || ! grep -q '[^[:space:]]' "$question_file"; then
+    if [[ ! -s "$question_raw" ]] || ! grep -q '[^[:space:]]' "$question_raw"; then
       reason='the request carried no QUESTION'
     else
       reason="$(mp_broker_deny_reason "$target" "$provider" "$max_depth" "$consulted")" || true
@@ -959,6 +993,8 @@ mp_broker_run() {
     fi
 
     consulted="${consulted:+$consulted }$target"
+    : > "$question_file"
+    mp_bound_question "$question_raw" "$question_file"
     : > "$context_use"
     mp_broker_context "$context_raw" "$context_use"
 
@@ -1766,17 +1802,40 @@ USAGE
   else
     printf 'Per-reviewer timeout: disabled\n' >&2
   fi
-  if (( depth > 1 )); then
-    printf 'Reviewer depth: %s — a reviewer may consult a model outside the panel\n' "$depth" >&2
-  fi
-  printf '\n' >&2
-
   # The roster the broker tests requests against. It is worker state and is
   # never exported to a provider process or named in a prompt: a reviewer does
   # not need to know why a request would be denied before making it, and the
   # denial reason explains it afterwards.
+  #
+  # Built before the banner because whether depth buys anything depends on it.
   local roster
   roster="$(IFS=' '; echo "${valid[*]}")"
+  # The synthesizer belongs on the roster even when it is not reviewing. It reads
+  # every review and reconciles them, so a reviewer that consults it gets an
+  # opinion the synthesizer will later meet again as someone else's independent
+  # finding — and with two reviewers doing it, the synthesizer reads its own
+  # opinion back as corroboration between them. That is the correlation this rule
+  # exists to prevent, arriving through the one seat where it is least visible.
+  mp_in_words "$synthesizer" "$roster" || roster="$roster $synthesizer"
+
+  # Announce depth only where it changes something. With the default panel — every
+  # installed model — there is no model outside it, so every reviewer is a leaf
+  # however high --depth goes. Saying otherwise would be the banner telling the
+  # developer what the prompts are careful not to tell the reviewers.
+  local any_may=0
+  for p in "${valid[@]}"; do
+    if mp_reviewer_may_consult "$p" "$max_depth" "$roster"; then any_may=1; break; fi
+  done
+  if (( depth > 1 )); then
+    if (( any_may == 1 )); then
+      printf 'Reviewer depth: %s — a reviewer may consult a model outside the panel\n' "$depth" >&2
+    else
+      printf 'Reviewer depth: %s has no effect here — the panel and synthesizer cover\n' "$depth" >&2
+      printf 'every installed model, so none is left outside to consult. Reviewers run\n' >&2
+      printf 'as leaves. Narrow the panel with --models to leave a model available.\n' >&2
+    fi
+  fi
+  printf '\n' >&2
 
   # Fan out. Reviewers are independent by construction, so there is nothing for one
   # to wait on: start every requested reviewer before waiting for any of them. The
@@ -1793,7 +1852,11 @@ USAGE
   local -a worker_pids=()
   local i=0 pid
   for p in "${valid[@]}"; do
-    prompt="$(review_prompt "$p" "$focus" "$context" "$(( depth > 1 ? 1 : 0 ))")"
+    if mp_reviewer_may_consult "$p" "$max_depth" "$roster"; then
+      prompt="$(review_prompt "$p" "$focus" "$context" 1)"
+    else
+      prompt="$(review_prompt "$p" "$focus" "$context" 0)"
+    fi
     printf 'Starting %s independent review...\n' "$(provider_label "$p")" >&2
     # Job control gives each worker a process group of its own, so cleanup can
     # signal one worker subtree without reaching its siblings or the parent.
@@ -3017,14 +3080,35 @@ main() {
   # A provider process is marked as brokered. Consultation is the parent's job
   # now, so a peer has no reason to run Model Peer — and Codex's read-only sandbox
   # permits command execution, so "it has no reason to" is worth backing with a
-  # refusal. doctor stays available because it is read-only and answers "who is
-  # here"; everything that spends model usage or writes a file does not.
+  # refusal. Plain `doctor` stays available because it is read-only and answers
+  # "who is here"; everything that spends model usage or writes a file does not.
+  #
+  # This is a guardrail, not a boundary. It stops the inadvertent case, which is
+  # the common one. It cannot stop a determined or prompt-injected peer: the
+  # marker is an environment variable, and a provider whose sandbox permits
+  # command execution can clear it. Nothing inside Model Peer can prevent that,
+  # so the safety documentation must not claim otherwise.
   if [[ -n "${MODEL_PEER_BROKERED:-}" ]]; then
+    local mp_arg
     case "${1:-}" in
       ask|review|init|update|trust)
         err "blocked: '$1' is not available to a model running as a peer."
         err 'Ask for a consultation in your reply instead; Model Peer performs it.'
         return 64
+        ;;
+      doctor)
+        # --probe is not read-only in the sense that matters here: it runs one
+        # real consultation per installed CLI, and does it with MODEL_PEER_STACK
+        # cleared, so it both spends usage and erases the chain guard. That is
+        # every property the refusal above exists to deny, reachable through a
+        # command that looked diagnostic.
+        for mp_arg in "$@"; do
+          if [[ "$mp_arg" == '--probe' ]]; then
+            err 'blocked: doctor --probe is not available to a model running as a peer.'
+            err 'It runs a real consultation per CLI and resets the peer chain.'
+            return 64
+          fi
+        done
         ;;
     esac
   fi

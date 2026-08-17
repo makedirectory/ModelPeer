@@ -2,6 +2,53 @@
 
 All notable changes to Model Peer are documented here.
 
+## 0.7.1 - 2026-08-17
+
+Review follow-ups to the consultation broker. Four gaps, and the documentation that
+was claiming more than the code held.
+
+### Fixed
+
+- **`doctor --probe` is refused for a peer.** The brokered-peer refusal covered
+  `ask`, `review`, `init`, `update`, and `trust` on the grounds that `doctor` is
+  read-only. `--probe` is not: it runs one real consultation per installed CLI, and
+  clears `MODEL_PEER_STACK` to do it. It therefore spent model usage and erased the
+  chain guard — every property the refusal exists to deny, reached through a command
+  that looked diagnostic.
+
+- **The synthesizer counts as a panel member.** It reads every review and reconciles
+  them, so a reviewer that consulted it would meet its own opinion again as another
+  reviewer's independent finding — and two reviewers doing it would have the
+  synthesizer read that back as corroboration between them.
+
+  With three providers installed this makes `--depth` above 1 inert whenever the
+  synthesizer sits outside the panel, because nobody is left who has not already
+  seen the change. `--depth` has an effect when the synthesizer is *inside* the
+  panel and an installed model is outside it.
+
+- **Reviewer prompts follow availability rather than `--depth`.** The default panel
+  is every installed model, so there was never anyone outside it to consult and the
+  reviewer ran as a leaf — while its prompt still offered a consultation and forbade
+  one in the same breath. Prompt and capability must never disagree. The startup
+  banner had the same fault and now reports which case the run is in instead of
+  letting depth look effective when it is not.
+
+- **`QUESTION` is bounded at 8192 bytes,** as `CONTEXT` already was. Under `review`
+  Model Peer supplies the repository evidence so a reviewer cannot forward only the
+  lines supporting its own conclusion — but `QUESTION` crossed verbatim and
+  unbounded, so the same excerpt pasted there had the identical effect. Truncation
+  is reported on stderr and marked in the packet the peer receives.
+
+### Changed
+
+- **`MODEL_PEER_BROKERED` is documented as a guardrail, not a boundary.** The safety
+  page described it as though a peer's attempt to run Model Peer fails. It is an
+  environment variable, and a provider whose sandbox permits command execution can
+  clear it. It reliably stops the inadvertent case, which is the one that occurs,
+  and nothing inside Model Peer can do more than that. What a determined or
+  prompt-injected peer would gain is an unauthorised consultation — spending usage
+  and stepping outside the panel rules — never write access.
+
 ## 0.7.0 - 2026-08-13
 
 ### Added

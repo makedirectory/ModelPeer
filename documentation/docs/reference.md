@@ -58,8 +58,24 @@ defaults to the first available of `claude`, `codex`, `gemini`.
 Reviewers are leaves at the default depth, and the synthesizer is a leaf always.
 `--depth 2` lets a reviewer consult a model that is not on the panel; a request for
 a panel member is denied, because two reviewers whose findings share a source are
-not two independent observations. `MODEL_PEER_MAX_DEPTH` does not apply here — a
-panel gets depth only when you ask for it explicitly.
+not two independent observations. The synthesizer counts as a panel member even
+when it is not reviewing — it reconciles every review, so seeding it through a
+consultation would have it meet its own opinion again as someone else's finding.
+`MODEL_PEER_MAX_DEPTH` does not apply here — a panel gets depth only when you ask
+for it explicitly.
+
+**`--depth` above 1 does nothing on the default panel.** The default is every
+installed model, so there is no model outside the panel left to consult and every
+reviewer runs as a leaf regardless. It has an effect only when you narrow the panel
+with `--models`, leaving an installed model outside it:
+
+```bash
+model-peer review --models codex,gemini --synthesizer codex --depth 2
+# claude is outside the panel, so a reviewer may consult it
+```
+
+Model Peer says which case you are in when the run starts rather than leaving depth
+to look effective when it is not.
 
 When a reviewer does consult a peer, Model Peer supplies the canonical review
 context and ignores a reviewer-authored `CONTEXT`, announcing the substitution on
