@@ -193,7 +193,7 @@ stale.
 ```yaml
 - name: Check agent skills
   run: |
-    curl -fsSL https://raw.githubusercontent.com/makedirectory/ModelPeer/v0.8.0/install.sh | bash
+    curl -fsSL https://raw.githubusercontent.com/makedirectory/ModelPeer/v0.8.1/install.sh | bash
     ~/.local/bin/model-peer update --check
 ```
 
