@@ -15,8 +15,13 @@ Closing that gap is one command, run once per repository:
 
 ```bash
 cd ~/code/your-project
-model-peer init
+model-peer init all
 ```
+
+`init` takes the agents it may write for, and has no default: pass `all`, or name
+the ones your team uses (`model-peer init claude`, `model-peer init claude,codex`).
+A bare `model-peer init` lists the choices and writes nothing, so nobody ends up
+with three vendor directories in a repository that uses one.
 
 ## What `init` writes
 
@@ -47,12 +52,12 @@ Each skill is addressed to the CLI that loads it and names its two peers — the
 Codex one opens *"You are Codex. Claude and Gemini are available as independent,
 read-only engineering peers"* — so every harness sees instructions written for it.
 
-Narrow it if you like, and preview before committing to anything:
+The rest of the surface, and a preview before committing to anything:
 
 ```bash
-model-peer init --agents claude,codex   # skip Gemini
-model-peer init --no-command            # skip the slash command
-model-peer init --dry-run               # report; write nothing
+model-peer init claude,codex            # skip Gemini
+model-peer init all --no-command        # skip the slash command
+model-peer init all --dry-run           # report; write nothing
 model-peer init --print=review          # dump a SKILL.md to stdout
 model-peer init --print=consult
 ```
@@ -188,13 +193,13 @@ stale.
 ```yaml
 - name: Check agent skills
   run: |
-    curl -fsSL https://raw.githubusercontent.com/makedirectory/ModelPeer/v0.7.1/install.sh | bash
+    curl -fsSL https://raw.githubusercontent.com/makedirectory/ModelPeer/v0.8.0/install.sh | bash
     ~/.local/bin/model-peer update --check
 ```
 
 ## Rolling it out to a team
 
-1. One person runs `model-peer init` and commits the four files.
+1. One person runs `model-peer init all` and commits the files.
 2. Everyone else runs the [installer](install) once, for the `model-peer` command
    itself. The skills are already in the repo.
 3. Nobody needs the same CLIs. `model-peer doctor` reports what each machine has,

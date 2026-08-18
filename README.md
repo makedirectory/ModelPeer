@@ -74,7 +74,7 @@ git changes --+--> Codex ---+--> synthesis
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/makedirectory/ModelPeer/v0.7.1/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/makedirectory/ModelPeer/v0.8.0/install.sh | bash
 ```
 
 Or clone and run `./install.sh`. As with any remote shell installer, inspect it
@@ -90,8 +90,11 @@ agent in your repository a habit. One command per project fixes that:
 
 ```bash
 cd ~/code/your-project
-model-peer init
+model-peer init all        # or: init claude / init codex / init gemini
 ```
+
+Name the agents whose directories it may write. There is no default — a repository
+gets the CLIs its team actually uses, and nothing else.
 
 ```text
   created   .claude/skills/cross-model-review/SKILL.md
@@ -125,7 +128,7 @@ them in CI.
 ```bash
 model-peer ask <claude|codex|gemini> "<focused question>"   # consult one peer
 model-peer review ["focus instructions"]                    # cross-model review
-model-peer init                                             # install the skills
+model-peer init <claude|codex|gemini|all>                   # install the skills
 model-peer update [--check]                                 # refresh them
 model-peer trust                                            # let Gemini load them
 model-peer doctor [--probe]                                 # check setup

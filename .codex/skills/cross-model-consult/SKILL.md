@@ -3,7 +3,7 @@ name: cross-model-consult
 description: Ask Claude or Gemini for an independent second opinion on one focused question, using Model Peer. Use before committing to an architecture, schema, or migration decision; on security-sensitive work such as authn/authz, sandboxing, input handling, secrets, or crypto; when a bug has outlived two of your own hypotheses; when you are inferring the behaviour of unfamiliar code or a dependency; and when two approaches are tied and you want the tradeoff.
 ---
 
-<!-- Managed by `model-peer init`. Version 0.7.1. Re-run `model-peer update` to refresh; local edits are replaced. -->
+<!-- Managed by `model-peer init`. Version 0.8.0. Re-run `model-peer update` to refresh; local edits are replaced. -->
 
 # Consult a peer
 

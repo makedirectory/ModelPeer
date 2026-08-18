@@ -2,6 +2,25 @@
 
 All notable changes to Model Peer are documented here.
 
+## 0.8.0 - 2026-08-17
+
+`init` no longer installs three vendor directories by default.
+
+### Changed
+
+- **`model-peer init` requires the agents it may write for.** It installed
+  `.claude/`, `.codex/`, and `.gemini/` by default, on the reasoning that a
+  teammate on a different CLI is then covered too. In a repository whose team uses
+  one CLI that is two vendor directories nobody asked for, and a tool that writes
+  them uninvited does not get run twice — the same rule that keeps `init` out of
+  `AGENTS.md`, applied to the directories it does own.
+
+  The selection is now positional: `model-peer init claude`,
+  `model-peer init claude,codex`, or `model-peer init all` for the previous
+  behaviour. A bare `model-peer init` names the choices, writes nothing, and exits
+  `2`. `--agents LIST` still works and means the same thing, so existing scripts
+  keep running. `--print` is unaffected; it never wrote anything.
+
 ## 0.7.1 - 2026-08-17
 
 Review follow-ups to the consultation broker. Four gaps, and the documentation that

@@ -12,13 +12,13 @@ CLIs you choose to use.
 ## One-line install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/makedirectory/ModelPeer/v0.7.1/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/makedirectory/ModelPeer/v0.8.0/install.sh | bash
 ```
 
 Interactive setup, which can offer to install missing CLIs:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/makedirectory/ModelPeer/v0.7.1/install.sh | bash -s -- --setup
+curl -fsSL https://raw.githubusercontent.com/makedirectory/ModelPeer/v0.8.0/install.sh | bash -s -- --setup
 ```
 
 As with any remote shell installer, inspect it before piping it into a shell.
@@ -115,13 +115,14 @@ in a repository any reason to use it. Run this once per project:
 
 ```bash
 cd ~/code/your-project
-model-peer init
+model-peer init all
 ```
 
-That installs a `cross-model-review` agent skill where Claude Code, Codex, and
-Gemini each look for one, plus a `/peer-review` slash command for Claude Code. It
-never touches your `AGENTS.md`, `CLAUDE.md`, or `GEMINI.md`. Commit the result and
-your teammates get it too.
+`init` writes only the agent directories you name — `all`, or any of `claude`,
+`codex`, and `gemini`. With `all`, that installs a `cross-model-review` agent
+skill where Claude Code, Codex, and Gemini each look for one, plus a
+`/peer-review` slash command for Claude Code. It never touches your `AGENTS.md`,
+`CLAUDE.md`, or `GEMINI.md`. Commit the result and your teammates get it too.
 
 → [In your workflow](workflow)
 

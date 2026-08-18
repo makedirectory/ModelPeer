@@ -186,7 +186,7 @@ mkdir -p "$MP_TEST_STATE_DIR"
 reset_turns() { rm -f "$MP_TEST_STATE_DIR"/turn-*; }
 
 # Basic CLI/version.
-[[ "$(model-peer --version)" == 'model-peer 0.7.1' ]]
+[[ "$(model-peer --version)" == 'model-peer 0.8.0' ]]
 
 # Ask dispatch + safety args + stdin closure.
 printf 'sentinel\n' | model-peer ask codex 'review this' >/dev/null
@@ -1230,7 +1230,7 @@ no_model_call model-peer review --help
 no_model_call model-peer init --help
 no_model_call model-peer update --help
 no_model_call model-peer doctor
-no_model_call model-peer init --dry-run
+no_model_call model-peer init all --dry-run
 no_model_call model-peer init --print
 no_model_call model-peer update --check
 no_model_call model-peer trust --check
@@ -1455,8 +1455,32 @@ mkdir -p "$SKILL_REPO"
 cd "$SKILL_REPO"
 git init -q
 
+# Selection is required. A bare `init` names the choices and writes nothing:
+# a tool that scatters three vendor directories through a repo uninvited does not
+# get run twice.
+if model-peer init > "$TMP/init-bare.txt" 2> "$TMP/init-bare.err"; then
+  echo 'expected a bare init to be refused' >&2; exit 1
+else
+  [[ $? -eq 2 ]]
+fi
+grep -Fq 'model-peer init all' "$TMP/init-bare.err"
+[[ ! -e .claude && ! -e .codex && ! -e .gemini ]]
+
+# One named agent writes that agent's directory and no other.
+model-peer init claude >/dev/null
+[[ -f .claude/skills/cross-model-review/SKILL.md ]]
+[[ ! -e .codex && ! -e .gemini ]]
+rm -rf .claude
+
+# Positional selection composes, and matches --agents.
+model-peer init codex,gemini --dry-run > "$TMP/init-two.txt"
+grep -Fq '.codex/skills/cross-model-review/SKILL.md' "$TMP/init-two.txt"
+grep -Fq '.gemini/skills/cross-model-review/SKILL.md' "$TMP/init-two.txt"
+! grep -Fq '.claude/' "$TMP/init-two.txt" || {
+  echo 'init codex,gemini must not touch .claude' >&2; exit 1; }
+
 # --dry-run reports without writing anything.
-model-peer init --dry-run > "$TMP/init-dry.txt"
+model-peer init all --dry-run > "$TMP/init-dry.txt"
 grep -Fq 'dry run' "$TMP/init-dry.txt"
 grep -Fq '.claude/skills/cross-model-review/SKILL.md' "$TMP/init-dry.txt"
 [[ ! -e .claude && ! -e .codex && ! -e .gemini ]]
@@ -1468,7 +1492,7 @@ ln -s AGENTS.md CLAUDE.md
 ln -s AGENTS.md GEMINI.md
 cp AGENTS.md "$TMP/agents-before.md"
 
-model-peer init > "$TMP/init.txt"
+model-peer init all > "$TMP/init.txt"
 cmp "$TMP/agents-before.md" AGENTS.md
 [[ "$(readlink CLAUDE.md)" == 'AGENTS.md' ]]
 [[ "$(readlink GEMINI.md)" == 'AGENTS.md' ]]
@@ -1511,7 +1535,7 @@ done
 
 # Re-running is idempotent, and update reports no drift.
 cp .codex/skills/cross-model-review/SKILL.md "$TMP/skill-first.md"
-model-peer init >/dev/null
+model-peer init all >/dev/null
 cmp "$TMP/skill-first.md" .codex/skills/cross-model-review/SKILL.md
 model-peer update >/dev/null
 model-peer update --check >/dev/null
