@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="0.7.1"
+VERSION="0.8.0"
 BIN_DIR="${MODEL_PEER_BIN_DIR:-$HOME/.local/bin}"
 DO_SETUP=0
 INSTALL_DEPS=0
@@ -9,7 +9,7 @@ DO_LOGIN=0
 
 usage() {
   cat <<'USAGE'
-Model Peer installer v0.7.1
+Model Peer installer v0.8.0
 
 Usage:
   ./install.sh [options]
@@ -83,12 +83,12 @@ write_commands() {
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="0.7.1"
+VERSION="0.8.0"
 PROGRAM="model-peer"
 
 usage() {
   cat <<'USAGE'
-Model Peer v0.7.1 — cross-model peer review for coding agents.
+Model Peer v0.8.0 — cross-model peer review for coding agents.
 
 Usage:
   model-peer ask claude "<focused question>"
@@ -98,7 +98,8 @@ Usage:
 
   model-peer review [options] ["focus instructions"]
 
-  model-peer init [options]            Install the cross-model review skill
+  model-peer init <claude|codex|gemini|all>
+                                       Install the cross-model review skill
   model-peer update [--check]          Refresh installed files to this version
   model-peer trust [--check]           Let Gemini load this project's skills
   model-peer doctor [--probe]
@@ -122,7 +123,8 @@ Review options:
   --strict               Refuse to synthesize unless every reviewer completed
 
 Init options:
-  --agents LIST          Comma-separated: claude, codex, gemini (default: all)
+  <AGENT>                claude, codex, gemini, or all. Required: init writes
+                         only the directories you name, never all three by default
   --no-command           Skip the Claude Code /peer-review slash command
   --print[=AGENT]        Print the SKILL.md to stdout; write nothing
   --dry-run              Report what would change; write nothing
@@ -2344,7 +2346,7 @@ mp_validate_agents() {
   for item in $csv; do
     case "$item" in
       claude|codex|gemini|'') ;;
-      *) err "unknown agent '$item'. Use claude, codex, or gemini."; return 2 ;;
+      *) err "unknown agent '$item'. Use claude, codex, gemini, or all."; return 2 ;;
     esac
   done
   return 0
@@ -2390,25 +2392,26 @@ mp_all_paths() {
 init_usage() {
   cat <<'USAGE'
 Usage:
-  model-peer init [options]
+  model-peer init <claude|codex|gemini|all> [options]
 
 Installs the cross-model review skill so your coding agent knows when to reach for
 a peer, plus the /peer-review slash command for Claude Code.
 
-Everything it writes is a file Model Peer owns, in the directory each vendor set
-aside for skills:
+Name the agent whose directory it may write. There is no default: a repository
+gets the directories its team actually uses, and nothing else.
 
-  .claude/skills/cross-model-review/SKILL.md
-  .codex/skills/cross-model-review/SKILL.md
-  .gemini/skills/cross-model-review/SKILL.md
-  .claude/commands/peer-review.md
+  model-peer init claude          .claude/skills/... and .claude/commands/...
+  model-peer init codex           .codex/skills/...
+  model-peer init gemini          .gemini/skills/...
+  model-peer init claude,codex    two of them
+  model-peer init all             all three, for a team on mixed CLIs
 
 Your AGENTS.md, CLAUDE.md, and GEMINI.md are never read, written, or symlinked.
 Run `model-peer update` after upgrading to refresh what is installed.
 
 Options:
-  --agents LIST    Comma-separated: claude, codex, gemini (default: all three,
-                   so a teammate on a different CLI is covered too)
+  --agents LIST    Same selection as the positional form, for scripts that
+                   already pass it
   --no-command     Skip .claude/commands/peer-review.md
   --print          Write the SKILL.md to stdout and exit; touch nothing
   --dir DIR        Target directory (default: the Git root, else the cwd)
@@ -2419,8 +2422,24 @@ Options:
 USAGE
 }
 
+# What to say when init is run with nothing to install. Selection is required, so
+# this is the most common first contact with the command.
+init_needs_agent() {
+  err 'init needs to know which agent to set up.'
+  cat >&2 <<'HINT'
+
+  model-peer init claude      # write .claude/ only
+  model-peer init codex       # write .codex/ only
+  model-peer init gemini      # write .gemini/ only
+  model-peer init all         # all three, for a team on mixed CLIs
+
+Nothing was written. `model-peer init --help` has the rest.
+HINT
+  return 2
+}
+
 cmd_init() {
-  local agents='claude,codex,gemini' dir='' want_command=1 print_only='' rel path status
+  local agents='' dir='' want_command=1 print_only='' rel path status
   MP_DRY_RUN=0
   MP_FORCE=0
 
@@ -2447,7 +2466,8 @@ cmd_init() {
         return 2
         ;;
       -*) err "unknown init option: $1"; return 2 ;;
-      *) err "init takes no positional arguments (got '$1')."; return 2 ;;
+      all) agents='claude,codex,gemini' ;;
+      *) agents="${agents:+$agents,}$1" ;;
     esac
     shift
   done
@@ -2467,6 +2487,7 @@ cmd_init() {
     return 0
   fi
 
+  [[ -n "${agents//[[:space:],]/}" ]] || { init_needs_agent; return 2; }
   mp_validate_agents "$agents" || return 2
 
   local root
@@ -2580,7 +2601,7 @@ $(mp_all_paths)
 EOF
 
   if (( found == 0 )); then
-    err 'no Model Peer files found in this project. Run: model-peer init'
+    err 'no Model Peer files found in this project. Run: model-peer init <agent>'
     return 1
   fi
   if (( check == 1 )) && (( stale == 1 )); then
@@ -2821,7 +2842,7 @@ doctor_repo_skills() {
 $(mp_all_paths)
 EOF
   if (( found == 0 )); then
-    printf '\nProject skills: none in %s (run: model-peer init)\n' "$root"
+    printf '\nProject skills: none in %s (run: model-peer init <agent>)\n' "$root"
   fi
 }
 

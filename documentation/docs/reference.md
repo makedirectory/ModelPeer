@@ -15,8 +15,8 @@ command | model-peer ask <claude|codex|gemini> [--depth N] [--timeout S]
 model-peer review [--models LIST] [--synthesizer MODEL] [--timeout S]
                   [--strict] ["focus"]
 
-model-peer init [--agents LIST] [--no-command] [--print[=AGENT]] [--dir DIR]
-                [--dry-run] [--force]
+model-peer init <claude|codex|gemini|all> [--no-command] [--print[=AGENT]]
+                [--dir DIR] [--dry-run] [--force]
 model-peer update [--check] [--dir DIR]
 model-peer trust [--check] [--dir DIR]
 
@@ -105,9 +105,16 @@ added code is reviewed rather than merely listed.
 Install the cross-model review skill into a project. See
 [In your workflow](workflow).
 
+Name the agents whose directories `init` may write. There is no default: a bare
+`model-peer init` lists the choices, writes nothing, and exits `2`.
+
+| Argument | Description |
+|---|---|
+| `<AGENT>` | `claude`, `codex`, `gemini`, `all`, or a comma-separated subset. Required |
+
 | Option | Description |
 |---|---|
-| `--agents LIST` | Comma-separated: `claude`, `codex`, `gemini` (default: all three) |
+| `--agents LIST` | The same selection, for scripts that already pass it |
 | `--no-command` | Skip `.claude/commands/peer-review.md` (the `/peer-review` slash command) |
 | `--print[=WHAT]` | Print to stdout and exit. `WHAT` is `review` (default), `consult`, `review-command`, or `consult-command` |
 | `--dir DIR` | Target directory (default: the Git root, else the cwd) |

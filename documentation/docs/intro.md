@@ -95,7 +95,7 @@ official CLI.
 4. **Project rules win** — local invariants outrank generic model advice.
 5. **No credential handling** — authentication stays with official vendor CLIs.
 6. **Bounded chains** — depth is capped and opt-in, and no model ever consults itself.
-7. **Review before autonomy** — v0.7.1 analyzes; it does not automatically apply fixes.
+7. **Review before autonomy** — v0.8.0 analyzes; it does not automatically apply fixes.
 
 ## Next
 

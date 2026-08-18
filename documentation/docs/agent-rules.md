@@ -16,8 +16,8 @@ and why.
 ## Install it
 
 ```bash
-model-peer init                    # a skill per CLI, plus the slash command
-model-peer init --agents codex     # just one
+model-peer init all                # a skill per CLI, plus the slash command
+model-peer init codex              # just one
 model-peer init --print            # print it; place it yourself
 model-peer update                  # refresh after upgrading Model Peer
 ```

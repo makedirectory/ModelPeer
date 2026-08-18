@@ -9,7 +9,7 @@ sidebar_position: 3
 ## Set up a project
 
 ```bash
-model-peer init
+model-peer init all       # or name the ones you use: init claude,codex
 ```
 
 Installs a `cross-model-review` skill under `.claude/skills/`, `.codex/skills/`,
@@ -187,7 +187,7 @@ model-peer doctor
 ```
 
 ```text
-Model Peer v0.7.1
+Model Peer v0.8.0
 
 Claude    installed  2.1.227    /Users/you/.local/bin/claude
 Codex     installed  0.147.0    /opt/homebrew/bin/codex
