@@ -2,6 +2,22 @@
 
 All notable changes to Model Peer are documented here.
 
+## 0.8.1 - 2026-08-18
+
+### Fixed
+
+- **The installer stopped telling new users to run a command that fails.** Its
+  closing message — the first thing anyone sees after `curl | bash`, and for many
+  people the only instructions they read — still said `model-peer init` and
+  `model-peer init --dry-run`. Both exit `2` without writing since 0.8.0. It also
+  still described `init` as installing for Claude Code, Codex, and Gemini, which
+  is now only what `init all` does.
+
+  A regression test extracts every `model-peer init …` line from the installer's
+  own output and runs each one, so the epilogue cannot drift from the CLI again.
+  Nothing about the installed files changed; upgrading from 0.8.0 is optional
+  unless you hand the install command to someone else.
+
 ## 0.8.0 - 2026-08-17
 
 `init` no longer installs three vendor directories by default.

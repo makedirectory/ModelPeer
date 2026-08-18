@@ -186,7 +186,7 @@ mkdir -p "$MP_TEST_STATE_DIR"
 reset_turns() { rm -f "$MP_TEST_STATE_DIR"/turn-*; }
 
 # Basic CLI/version.
-[[ "$(model-peer --version)" == 'model-peer 0.8.0' ]]
+[[ "$(model-peer --version)" == 'model-peer 0.8.1' ]]
 
 # Ask dispatch + safety args + stdin closure.
 printf 'sentinel\n' | model-peer ask codex 'review this' >/dev/null
@@ -1834,10 +1834,29 @@ cd "$ROOT"
 
 # Installer must reproduce the repository binaries exactly.
 cd "$ROOT"
-bash install.sh --bin-dir "$MODEL_PEER_BIN_DIR" >/dev/null
+bash install.sh --bin-dir "$MODEL_PEER_BIN_DIR" > "$TMP/install-out.txt"
 for cmd in model-peer ask-claude ask-codex ask-gemini ai-review; do
   cmp "$ROOT/bin/$cmd" "$MODEL_PEER_BIN_DIR/$cmd"
 done
+
+# Every command the installer tells a new user to run has to work. Its closing
+# message is first contact, and it went stale the moment `init` stopped defaulting
+# to all three agents: it was still printing a bare `model-peer init`, which now
+# exits 2 without writing. Extract each suggested init line and run it.
+grep -oE 'model-peer init[^#]*' "$TMP/install-out.txt" | sed 's/[[:space:]]*$//' \
+  | sort -u > "$TMP/install-suggests.txt"
+[[ -s "$TMP/install-suggests.txt" ]] \
+  || { echo 'the installer stopped mentioning init at all' >&2; exit 1; }
+SUGGEST_REPO="$TMP/installer-suggests-repo"
+mkdir -p "$SUGGEST_REPO"
+while IFS= read -r suggested; do
+  [[ -n "$suggested" ]] || continue
+  # shellcheck disable=SC2086  # the suggestion is a command line, split on purpose
+  if ! (cd "$SUGGEST_REPO" && "$MODEL_PEER_BIN_DIR/model-peer" ${suggested#model-peer } \
+        --dir "$SUGGEST_REPO" --dry-run >/dev/null 2>&1); then
+    echo "the installer suggests '$suggested', which fails" >&2; exit 1
+  fi
+done < "$TMP/install-suggests.txt"
 
 # Doctor should run with stubs.
 "$MODEL_PEER_BIN_DIR/model-peer" doctor >/dev/null

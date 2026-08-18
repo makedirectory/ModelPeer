@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="0.8.0"
+VERSION="0.8.1"
 BIN_DIR="${MODEL_PEER_BIN_DIR:-$HOME/.local/bin}"
 DO_SETUP=0
 INSTALL_DEPS=0
@@ -9,7 +9,7 @@ DO_LOGIN=0
 
 usage() {
   cat <<'USAGE'
-Model Peer installer v0.8.0
+Model Peer installer v0.8.1
 
 Usage:
   ./install.sh [options]
@@ -83,12 +83,12 @@ write_commands() {
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="0.8.0"
+VERSION="0.8.1"
 PROGRAM="model-peer"
 
 usage() {
   cat <<'USAGE'
-Model Peer v0.8.0 — cross-model peer review for coding agents.
+Model Peer v0.8.1 — cross-model peer review for coding agents.
 
 Usage:
   model-peer ask claude "<focused question>"
@@ -3320,11 +3320,12 @@ Give your coding agent the habit — run this once per project:
 '
 printf '  cd /path/to/your-project
 '
-printf '  model-peer init
+printf '  model-peer init all       # or name one: init claude / codex / gemini
 '
 printf '
-  Installs a cross-model review skill for Claude Code, Codex, and Gemini, plus
-  the /peer-review and /peer-ask commands for Claude Code, so your agent reaches
-  for a peer on its own. Your AGENTS.md, CLAUDE.md, and GEMINI.md are not touched.
-  Preview it first with: model-peer init --dry-run
+  Installs a cross-model review skill for each agent you name, plus the
+  /peer-review and /peer-ask commands for Claude Code, so your agent reaches for
+  a peer on its own. It writes only the directories you name, and your AGENTS.md,
+  CLAUDE.md, and GEMINI.md are not touched.
+  Preview it first with: model-peer init all --dry-run
 '
